@@ -2,7 +2,11 @@ version: "3.8"
 
 services:
   chatgptproxy:
-    image: chatgptproxy:v1
+    # `latest` de propósito: com tag fixa aqui, todo `docker stack deploy` (por
+    # exemplo para trocar a chave) devolvia o serviço à imagem velha e desfazia
+    # correções já publicadas, sem avisar. Buildar sempre com
+    # `docker build -t chatgptproxy:latest -t chatgptproxy:vN .`
+    image: chatgptproxy:latest
     environment:
       PORT: "3000"
       API_KEY: "${API_KEY}"
