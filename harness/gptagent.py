@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""gptagent — harness mínimo que deixa o ChatGPT (via chatgptproxy) mexer nos
+arquivos do seu computador.
+
+Um arquivo só, sem dependências fora da biblioteca padrão. Roda em Windows e
+Linux. O modelo não executa nada sozinho: ele PEDE uma ação num bloco ```acao,
+este programa executa e devolve a saída. Fora do modo --sim-a-tudo, toda ação
+que escreve ou roda comando passa pela sua confirmação.
+
+Uso:
+    python gptagent.py --dir C:\\meus-projetos\\site
+    python gptagent.py --dir . --sim-a-tudo -p "conserte o bug do login"
+
+Configuração (variáveis de ambiente ou flags):
+    GPTAGENT_URL      padrão https://gptproxy.nutef.com/v1
+    GPTAGENT_KEY      a chave do proxy
+    GPTAGENT_MODEL    padrão gpt-5
+"""
+import argparse
+import difflib
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VERSAO = "1.0"
+PADRAO_URL = os.environ.get("GPTAGENT_URL", "https://gptproxy.nutef.com/v1")
+PADRAO_KEY = os.environ.get("GPTAGENT_KEY", "")
+PADRAO_MODEL = os.environ.get("GPTAGENT_MODEL", "gpt-5")
+
+MAX_SAIDA = 6000        # caracteres de saída devolvidos ao modelo
+MAX_PASSOS = 40         # teto de ações por pedido
+TIMEOUT_SHELL = 300     # segundos
+
+WINDOWS = platform.system() == "Windows"
+
+
+# ---------------------------------------------------------------- aparência
+class C:
+    ok = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[32m"
+    warn = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[33m"
+    err = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[31m"
+    dim = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[2m"
+    bold = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[1m"
+    off = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[0m"
+
+
+def diz(msg: str = "") -> None:
+    print(msg, flush=True)
+
+
+# ------------------------------------------------------------ prompt do sistema
+SISTEMA = """Você é um agente de programação que trabalha nos arquivos de um computador real, através de um programa que executa suas ações. Responda sempre em português brasileiro.
+
+## Como agir
+
+Para fazer qualquer coisa, responda com UM ÚNICO bloco ```acao e MAIS NADA — sem texto antes ou depois. Eu executo e devolvo a saída na mensagem seguinte. Você lê a saída e manda a próxima ação. Um passo por vez.
+
+O bloco começa com uma linha JSON e pode trazer seções de texto cru depois, cada uma aberta por uma linha `---NOME---`. Dentro das seções NÃO se escapa nada: escreva o conteúdo literal.
+
+REGRA ABSOLUTA: nunca afirme que leu, criou, alterou ou testou algo antes de ter recebido de mim a saída correspondente. Se você não viu a saída, o trabalho não foi feito.
+
+Sua PRIMEIRA resposta já deve ser um bloco ```acao (normalmente `listar` ou `ler`, para conhecer o terreno antes de mudar qualquer coisa). Não responda "entendi" nem descreva planos em prosa.
+
+## Ações
+
+Explorar:
+```acao
+{"tool": "listar", "caminho": "."}
+```
+```acao
+{"tool": "ler", "caminho": "src/app.py"}
+```
+```acao
+{"tool": "buscar", "padrao": "def login", "caminho": "src"}
+```
+
+Criar ou substituir um arquivo inteiro:
+```acao
+{"tool": "escrever", "caminho": "src/novo.py"}
+---CONTEUDO---
+print("olá")
+```
+
+Alterar um trecho (preferido para arquivo existente — o texto em DE precisa bater EXATAMENTE, uma única vez no arquivo):
+```acao
+{"tool": "editar", "caminho": "src/app.py"}
+---DE---
+def login(user):
+    return None
+---PARA---
+def login(user):
+    return checar(user)
+```
+
+Rodar comando (no diretório do projeto):
+```acao
+{"tool": "shell", "comando": "python -m pytest -q"}
+```
+
+Salvar no git (add + commit + push de uma vez):
+```acao
+{"tool": "git", "mensagem": "conserta o login vazio"}
+```
+
+Terminar — só quando o trabalho estiver pronto E verificado pela saída dos comandos:
+```acao
+{"tool": "pronto"}
+---CONTEUDO---
+Resumo do que foi feito e como conferi.
+```
+
+## Regras
+
+- Leia antes de escrever. Nunca reescreva um arquivo que você não leu nesta conversa.
+- Prefira `editar` a `escrever` em arquivo existente: `escrever` apaga o que havia.
+- Caminhos sempre relativos ao diretório do projeto. Sair dele é bloqueado.
+- Comandos precisam ser não-interativos (`-y`, `--yes`, `printf`); nunca peça confirmação no terminal.
+- Se um comando falhar, leia o erro e tente outro caminho — não repita o mesmo comando.
+- Escreva código no estilo do que já existe no projeto.
+"""
+
+
+# ------------------------------------------------------------------ cliente
+class ErroProxy(Exception):
+    pass
+
+
+def chamar_modelo(url: str, key: str, model: str, mensagens: list, stream: bool) -> str:
+    corpo = json.dumps(
+        {"model": model, "messages": mensagens, "stream": stream}, ensure_ascii=False
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url.rstrip("/") + "/chat/completions",
+        data=corpo,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "Accept": "text/event-stream" if stream else "application/json",
+        },
+    )
+    try:
+        # timeout largo de propósito: do outro lado há um navegador digitando
+        with urllib.request.urlopen(req, timeout=900) as resp:
+            if not stream:
+                dados = json.loads(resp.read().decode("utf-8"))
+                return dados["choices"][0]["message"]["content"]
+            partes = []
+            for linha in resp:
+                linha = linha.decode("utf-8", "replace").strip()
+                if not linha.startswith("data:"):
+                    continue
+                dado = linha[5:].strip()
+                if dado == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(dado)
+                except json.JSONDecodeError:
+                    continue
+                if "error" in evt:
+                    raise ErroProxy(evt["error"].get("message", "erro no proxy"))
+                delta = (evt.get("choices") or [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    partes.append(delta)
+                    sys.stdout.write(C.dim + delta + C.off)
+                    sys.stdout.flush()
+            if partes:
+                diz()
+            return "".join(partes)
+    except urllib.error.HTTPError as e:
+        detalhe = e.read().decode("utf-8", "replace")[:400]
+        raise ErroProxy(f"HTTP {e.code}: {detalhe}")
+    except urllib.error.URLError as e:
+        raise ErroProxy(f"não consegui falar com o proxy: {e.reason}")
+
+
+# -------------------------------------------------------------------- parser
+BLOCO = re.compile(r"```acao\s*\n(.*?)```", re.DOTALL)
+
+
+def extrair_acao(resposta: str) -> dict | None:
+    """Extrai o bloco ```acao: JSON na primeira linha + seções ---NOME---."""
+    m = BLOCO.search(resposta)
+    if not m:
+        return None
+    bruto = m.group(1)
+    linhas = bruto.split("\n")
+
+    cabecalho, corpo, i = [], [], 0
+    for i, linha in enumerate(linhas):
+        if linha.strip().startswith("---") and linha.strip().endswith("---"):
+            corpo = linhas[i:]
+            break
+        cabecalho.append(linha)
+    else:
+        corpo = []
+
+    try:
+        acao = json.loads("\n".join(cabecalho).strip())
+    except json.JSONDecodeError as e:
+        return {"tool": "__erro__", "erro": f"JSON inválido no bloco de ação: {e}"}
+    if not isinstance(acao, dict):
+        return {"tool": "__erro__", "erro": "o bloco de ação precisa ser um objeto JSON"}
+
+    nome, acumulado = None, []
+    for linha in corpo:
+        marca = linha.strip()
+        if marca.startswith("---") and marca.endswith("---") and len(marca) > 6:
+            if nome:
+                acao[nome] = "\n".join(acumulado)
+            nome, acumulado = marca.strip("-").strip().lower(), []
+        elif nome is not None:
+            acumulado.append(linha)
+    if nome:
+        # A última seção termina na quebra de linha que precede o fecho do
+        # bloco; sem tirar essa linha vazia, todo `editar` injeta um espaço a
+        # mais no arquivo.
+        if acumulado and acumulado[-1] == "":
+            acumulado.pop()
+        acao[nome] = "\n".join(acumulado)
+    return acao
+
+
+# ---------------------------------------------------------------- ferramentas
+class ForaDoProjeto(Exception):
+    pass
+
+
+def resolver(raiz: Path, caminho: str) -> Path:
+    alvo = (raiz / (caminho or ".")).resolve()
+    if alvo != raiz and raiz not in alvo.parents:
+        raise ForaDoProjeto(f"'{caminho}' está fora do diretório do projeto")
+    return alvo
+
+
+IGNORAR = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+
+
+def t_listar(raiz: Path, caminho: str) -> str:
+    alvo = resolver(raiz, caminho)
+    if not alvo.exists():
+        return f"não existe: {caminho}"
+    if alvo.is_file():
+        return f"{caminho} é arquivo ({alvo.stat().st_size} bytes)"
+    linhas = []
+    for item in sorted(alvo.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if item.name in IGNORAR or item.name.startswith("."):
+            continue
+        rel = item.relative_to(raiz).as_posix()
+        linhas.append(f"{rel}/" if item.is_dir() else f"{rel}  ({item.stat().st_size}b)")
+        if len(linhas) >= 200:
+            linhas.append("... (lista truncada em 200 itens)")
+            break
+    return "\n".join(linhas) or "(diretório vazio)"
+
+
+def t_ler(raiz: Path, caminho: str, inicio: int = 1, linhas: int = 600) -> str:
+    alvo = resolver(raiz, caminho)
+    if not alvo.is_file():
+        return f"não é um arquivo legível: {caminho}"
+    try:
+        conteudo = alvo.read_text(encoding="utf-8", errors="replace").split("\n")
+    except Exception as e:
+        return f"não consegui ler {caminho}: {e}"
+    fim = min(len(conteudo), inicio - 1 + linhas)
+    trecho = "\n".join(
+        f"{n:>5}  {conteudo[n - 1]}" for n in range(max(1, inicio), fim + 1)
+    )
+    rodape = "" if fim >= len(conteudo) else f"\n... ({len(conteudo) - fim} linhas restantes)"
+    return f"{caminho} ({len(conteudo)} linhas)\n{trecho}{rodape}"
+
+
+def t_buscar(raiz: Path, padrao: str, caminho: str = ".") -> str:
+    base = resolver(raiz, caminho)
+    try:
+        rx = re.compile(padrao)
+    except re.error as e:
+        return f"expressão inválida: {e}"
+    achados = []
+    arquivos = [base] if base.is_file() else base.rglob("*")
+    for arq in arquivos:
+        if not arq.is_file() or any(p in IGNORAR for p in arq.parts):
+            continue
+        try:
+            texto = arq.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for n, linha in enumerate(texto.split("\n"), 1):
+            if rx.search(linha):
+                achados.append(f"{arq.relative_to(raiz).as_posix()}:{n}: {linha.strip()[:200]}")
+                if len(achados) >= 100:
+                    return "\n".join(achados) + "\n... (100 resultados; refine a busca)"
+    return "\n".join(achados) or "nenhum resultado"
+
+
+def diff_texto(antes: str, depois: str, nome: str) -> str:
+    d = difflib.unified_diff(
+        antes.split("\n"), depois.split("\n"),
+        fromfile=f"a/{nome}", tofile=f"b/{nome}", lineterm="", n=2,
+    )
+    return "\n".join(d)
+
+
+def mostrar_diff(diff: str) -> None:
+    if not diff.strip():
+        diz(f"{C.dim}(sem mudança){C.off}")
+        return
+    for linha in diff.split("\n")[:120]:
+        cor = C.ok if linha.startswith("+") else C.err if linha.startswith("-") else C.dim
+        diz(cor + linha + C.off)
+
+
+def rodar_shell(raiz: Path, comando: str) -> str:
+    try:
+        r = subprocess.run(
+            comando, shell=True, cwd=str(raiz), capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SHELL,
+        )
+    except subprocess.TimeoutExpired:
+        return f"o comando estourou {TIMEOUT_SHELL}s e foi interrompido"
+    saida = (r.stdout or "") + (("\n[stderr]\n" + r.stderr) if r.stderr else "")
+    return f"[código de saída {r.returncode}]\n{saida.strip() or '(sem saída)'}"
+
+
+# ---------------------------------------------------------------------- loop
+def confirmar(pergunta: str, auto: bool) -> bool:
+    if auto:
+        return True
+    try:
+        resp = input(f"{C.warn}{pergunta} [s/N] {C.off}").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        diz()
+        return False
+    return resp in ("s", "sim", "y", "yes")
+
+
+def executar(acao: dict, raiz: Path, auto: bool) -> tuple[str, bool]:
+    """Executa a ação. Devolve (saída para o modelo, terminou?)."""
+    tool = (acao.get("tool") or "").lower()
+
+    if tool == "__erro__":
+        return acao["erro"], False
+
+    try:
+        if tool == "listar":
+            caminho = acao.get("caminho", ".")
+            diz(f"{C.bold}▸ listar{C.off} {caminho}")
+            return t_listar(raiz, caminho), False
+
+        if tool == "ler":
+            caminho = acao.get("caminho", "")
+            diz(f"{C.bold}▸ ler{C.off} {caminho}")
+            return t_ler(raiz, caminho, int(acao.get("inicio", 1)), int(acao.get("linhas", 600))), False
+
+        if tool == "buscar":
+            padrao = acao.get("padrao", "")
+            diz(f"{C.bold}▸ buscar{C.off} /{padrao}/ em {acao.get('caminho', '.')}")
+            return t_buscar(raiz, padrao, acao.get("caminho", ".")), False
+
+        if tool == "escrever":
+            caminho = acao.get("caminho", "")
+            novo = acao.get("conteudo", "")
+            alvo = resolver(raiz, caminho)
+            antes = alvo.read_text(encoding="utf-8", errors="replace") if alvo.is_file() else ""
+            diz(f"{C.bold}▸ escrever{C.off} {caminho}"
+                + (f" {C.warn}(SUBSTITUI {len(antes.splitlines())} linhas){C.off}" if antes else " (novo)"))
+            mostrar_diff(diff_texto(antes, novo, caminho))
+            if not confirmar("aplicar?", auto):
+                return "o dono recusou esta alteração; proponha outra coisa ou pergunte", False
+            alvo.parent.mkdir(parents=True, exist_ok=True)
+            alvo.write_text(novo if novo.endswith("\n") else novo + "\n", encoding="utf-8")
+            return f"gravado: {caminho} ({len(novo.splitlines())} linhas)", False
+
+        if tool == "editar":
+            caminho = acao.get("caminho", "")
+            de, para = acao.get("de"), acao.get("para", "")
+            alvo = resolver(raiz, caminho)
+            if not alvo.is_file():
+                return f"não existe: {caminho}", False
+            if de is None:
+                return "faltou a seção ---DE--- com o trecho exato a substituir", False
+            antes = alvo.read_text(encoding="utf-8", errors="replace")
+            ocorrencias = antes.count(de)
+            if ocorrencias == 0:
+                return (f"o trecho de ---DE--- não existe em {caminho}. "
+                        "Releia o arquivo e copie o texto exato, com a mesma indentação."), False
+            if ocorrencias > 1:
+                return (f"o trecho de ---DE--- aparece {ocorrencias} vezes em {caminho}; "
+                        "inclua mais linhas de contexto para ficar único."), False
+            depois = antes.replace(de, para)
+            diz(f"{C.bold}▸ editar{C.off} {caminho}")
+            mostrar_diff(diff_texto(antes, depois, caminho))
+            if not confirmar("aplicar?", auto):
+                return "o dono recusou esta alteração; proponha outra coisa ou pergunte", False
+            alvo.write_text(depois, encoding="utf-8")
+            return f"editado: {caminho}", False
+
+        if tool == "shell":
+            comando = acao.get("comando", "")
+            diz(f"{C.bold}▸ shell{C.off} {C.warn}{comando}{C.off}")
+            if not confirmar("rodar?", auto):
+                return "o dono recusou rodar este comando; tente outro caminho", False
+            return rodar_shell(raiz, comando), False
+
+        if tool == "git":
+            msg = acao.get("mensagem", "alterações do gptagent")
+            diz(f"{C.bold}▸ git{C.off} commit+push: {msg}")
+            if not confirmar("commitar e enviar?", auto):
+                return "o dono recusou o commit", False
+            saidas = [rodar_shell(raiz, "git add -A"),
+                      rodar_shell(raiz, f'git commit -m "{msg}"'),
+                      rodar_shell(raiz, "git push")]
+            return "\n\n".join(saidas), False
+
+        if tool == "pronto":
+            return acao.get("conteudo", "").strip() or "(sem resumo)", True
+
+        return (f"ação desconhecida: '{tool}'. Use listar, ler, buscar, escrever, "
+                "editar, shell, git ou pronto."), False
+
+    except ForaDoProjeto as e:
+        return f"bloqueado: {e}", False
+    except Exception as e:
+        return f"a ação falhou: {type(e).__name__}: {e}", False
+
+
+def encurtar(texto: str) -> str:
+    if len(texto) <= MAX_SAIDA:
+        return texto
+    meio = MAX_SAIDA // 2
+    return (texto[:meio] + f"\n\n... [cortado: {len(texto) - MAX_SAIDA} caracteres] ...\n\n"
+            + texto[-meio:])
+
+
+def rodar_pedido(pedido: str, cfg, raiz: Path, mensagens: list) -> None:
+    mensagens.append({"role": "user", "content": pedido})
+    for passo in range(1, MAX_PASSOS + 1):
+        diz(f"\n{C.dim}— passo {passo} —{C.off}")
+        try:
+            resposta = chamar_modelo(cfg.url, cfg.key, cfg.model, mensagens, cfg.stream)
+        except ErroProxy as e:
+            diz(f"{C.err}proxy: {e}{C.off}")
+            return
+        except KeyboardInterrupt:
+            diz(f"\n{C.warn}interrompido{C.off}")
+            return
+        if not resposta.strip():
+            diz(f"{C.err}o modelo respondeu vazio{C.off}")
+            return
+        mensagens.append({"role": "assistant", "content": resposta})
+
+        acao = extrair_acao(resposta)
+        if acao is None:
+            if not cfg.stream:
+                diz(resposta.strip())
+            mensagens.append({"role": "user", "content":
+                "Você respondeu em prosa. Mande UM bloco ```acao com a próxima ação, "
+                "ou o bloco `pronto` se o trabalho acabou."})
+            continue
+
+        saida, terminou = executar(acao, raiz, cfg.auto)
+        if terminou:
+            diz(f"\n{C.ok}✔ {saida}{C.off}")
+            return
+        diz(f"{C.dim}{saida[:800]}{C.off}" if len(saida) > 800 else f"{C.dim}{saida}{C.off}")
+        mensagens.append({"role": "user", "content": f"SAÍDA:\n```\n{encurtar(saida)}\n```"})
+
+    diz(f"{C.warn}parei no limite de {MAX_PASSOS} passos{C.off}")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="ChatGPT mexendo nos seus arquivos, via chatgptproxy")
+    p.add_argument("--dir", default=".", help="diretório do projeto (padrão: atual)")
+    p.add_argument("--url", default=PADRAO_URL, help=f"endpoint do proxy (padrão: {PADRAO_URL})")
+    p.add_argument("--key", default=PADRAO_KEY, help="chave do proxy (ou GPTAGENT_KEY)")
+    p.add_argument("--model", default=PADRAO_MODEL)
+    p.add_argument("-p", "--pedido", help="executa um pedido e sai (sem modo interativo)")
+    p.add_argument("--sim-a-tudo", dest="auto", action="store_true",
+                   help="não pergunta antes de escrever arquivo nem rodar comando")
+    p.add_argument("--sem-stream", dest="stream", action="store_false",
+                   help="não mostra a resposta sendo escrita")
+    cfg = p.parse_args()
+
+    raiz = Path(cfg.dir).resolve()
+    if not raiz.is_dir():
+        diz(f"{C.err}não é um diretório: {raiz}{C.off}")
+        return 1
+    if not cfg.key:
+        diz(f"{C.err}falta a chave do proxy (--key ou GPTAGENT_KEY){C.off}")
+        return 1
+
+    diz(f"{C.bold}gptagent {VERSAO}{C.off}  projeto: {raiz}")
+    diz(f"{C.dim}modelo {cfg.model} via {cfg.url}"
+        + ("  | SEM confirmação (--sim-a-tudo)" if cfg.auto else "  | confirma antes de alterar")
+        + f"{C.off}")
+    if cfg.auto:
+        diz(f"{C.warn}atenção: neste modo o modelo escreve arquivos e roda comandos sem perguntar.{C.off}")
+
+    mensagens = [{"role": "system", "content": SISTEMA
+                  + f"\n\nDiretório do projeto: {raiz}\nSistema: {platform.system()}"}]
+
+    if cfg.pedido:
+        rodar_pedido(cfg.pedido, cfg, raiz, mensagens)
+        return 0
+
+    diz(f"{C.dim}digite o que quer, ou 'sair'.{C.off}")
+    while True:
+        try:
+            pedido = input(f"\n{C.bold}você ▸{C.off} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            diz()
+            return 0
+        if pedido.lower() in ("sair", "exit", "quit"):
+            return 0
+        if pedido:
+            rodar_pedido(pedido, cfg, raiz, mensagens)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

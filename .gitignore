@@ -1,0 +1,7 @@
+# Perfis dos navegadores: contêm cookie de sessão do ChatGPT E da conta Google.
+# NUNCA versionar — um `git add -A` distraído vazaria as três contas.
+profiles/
+*.png
+__pycache__/
+*.pyc
+.env

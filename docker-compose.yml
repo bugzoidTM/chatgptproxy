@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  chatgptproxy:
+    image: chatgptproxy:v1
+    environment:
+      PORT: "3000"
+      API_KEY: "${API_KEY}"
+      ACCOUNTS: "conta1,conta2,conta3"
+      PROFILES_DIR: "/app/profiles"
+      DEFAULT_MODEL: "gpt-5"
+      ANSWER_TIMEOUT: "600"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      NOVNC_HINT: "na VPS rode /home/chatgptproxy/novnc.sh e siga as instrucoes"
+    volumes:
+      - /home/chatgptproxy/profiles:/app/profiles
+      # /dev/shm de 64MB (padrão do Docker) sufoca o Chromium e vira timeout
+      # relatado como bloqueio — lição cara aprendida no qwenproxy.
+      - type: tmpfs
+        target: /dev/shm
+        tmpfs:
+          size: 1073741824
+    # A porta do noVNC NÃO é publicada de propósito: o firewall desta VPS está
+    # com INPUT ACCEPT, e publicar no swarm (que só sabe host mode) deixaria o
+    # noVNC SEM SENHA aberto na internet. Para logar, use ./novnc.sh, que abre
+    # um túnel só no loopback.
+    networks:
+      - Nutef
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          memory: 8G
+      labels:
+        traefik.enable: "true"
+        traefik.http.routers.chatgptproxy.rule: "Host(`gptproxy.nutef.com`)"
+        traefik.http.routers.chatgptproxy.entrypoints: "websecure"
+        traefik.http.routers.chatgptproxy.tls.certresolver: "letsencryptresolver"
+        traefik.http.services.chatgptproxy.loadbalancer.server.port: "3000"
+
+networks:
+  Nutef:
+    external: true
