@@ -39,11 +39,11 @@ def _pasta_do_programa() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _chave_de_arquivo() -> str:
+def _chave_de_arquivo() -> tuple[str, str]:
     """Chave num `gptagent.key` ao lado do programa ou na pasta atual.
 
     Existe para o .exe: quem clica num executável não define variável de
-    ambiente, e repetir --key a cada uso cansa.
+    ambiente, e repetir --key a cada uso cansa. Devolve (chave, de onde veio).
     """
     for pasta in (_pasta_do_programa(), Path.cwd()):
         arq = pasta / "gptagent.key"
@@ -51,14 +51,34 @@ def _chave_de_arquivo() -> str:
             if arq.is_file():
                 # utf-8-sig: o Out-File do PowerShell 5.1 grava BOM, e o BOM
                 # entraria na chave como caractere invisível — 401 sem pista.
-                return arq.read_text(encoding="utf-8-sig").strip()
+                return arq.read_text(encoding="utf-8-sig").strip(), str(arq)
         except OSError:
             continue
-    return ""
+    return "", ""
+
+
+def _resolver_chave() -> tuple[str, str, str]:
+    """Decide a chave e diz de onde veio, avisando quando as duas fontes
+    discordam — variável de ambiente esquecida sobrepondo o arquivo recém
+    escrito foi um erro que custou três rodadas de depuração."""
+    ambiente = os.environ.get("GPTAGENT_KEY", "").strip()
+    arquivo, caminho = _chave_de_arquivo()
+    conflito = ""
+    if ambiente and arquivo and ambiente != arquivo:
+        conflito = (
+            f"a variável GPTAGENT_KEY (…{ambiente[-4:]}) e o {caminho} "
+            f"(…{arquivo[-4:]}) têm chaves DIFERENTES; vale a variável. "
+            "Apague a variável se quer usar a do arquivo:  Remove-Item Env:\\GPTAGENT_KEY"
+        )
+    if ambiente:
+        return ambiente, "variável GPTAGENT_KEY", conflito
+    if arquivo:
+        return arquivo, caminho, conflito
+    return "", "", conflito
 
 
 PADRAO_URL = os.environ.get("GPTAGENT_URL", "https://gptproxy.nutef.com/v1")
-PADRAO_KEY = os.environ.get("GPTAGENT_KEY", "") or _chave_de_arquivo()
+PADRAO_KEY, ORIGEM_KEY, CONFLITO_KEY = _resolver_chave()
 PADRAO_MODEL = os.environ.get("GPTAGENT_MODEL", "gpt-5")
 
 MAX_SAIDA = 6000        # caracteres de saída devolvidos ao modelo
@@ -566,6 +586,13 @@ def main() -> int:
     diz(f"{C.dim}modelo {cfg.model} via {cfg.url}"
         + ("  | SEM confirmação (--sim-a-tudo)" if cfg.auto else "  | confirma antes de alterar")
         + f"{C.off}")
+    # De onde veio a chave, sempre à vista: quando ela está errada, saber a
+    # ORIGEM é o que resolve — o valor sozinho não diz nada.
+    usou_flag = cfg.key != PADRAO_KEY
+    origem = "--key" if usou_flag else (ORIGEM_KEY or "?")
+    diz(f"{C.dim}chave: {len(cfg.key)} caracteres (…{cfg.key[-4:]}) de {origem}{C.off}")
+    if CONFLITO_KEY and not usou_flag:  # com --key o conflito não decide nada
+        diz(f"{C.warn}atenção: {CONFLITO_KEY}{C.off}")
     if cfg.auto:
         diz(f"{C.warn}atenção: neste modo o modelo escreve arquivos e roda comandos sem perguntar.{C.off}")
 
