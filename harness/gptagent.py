@@ -49,7 +49,9 @@ def _chave_de_arquivo() -> str:
         arq = pasta / "gptagent.key"
         try:
             if arq.is_file():
-                return arq.read_text(encoding="utf-8").strip()
+                # utf-8-sig: o Out-File do PowerShell 5.1 grava BOM, e o BOM
+                # entraria na chave como caractere invisível — 401 sem pista.
+                return arq.read_text(encoding="utf-8-sig").strip()
         except OSError:
             continue
     return ""
@@ -200,6 +202,14 @@ def chamar_modelo(url: str, key: str, model: str, mensagens: list, stream: bool)
             return "".join(partes)
     except urllib.error.HTTPError as e:
         detalhe = e.read().decode("utf-8", "replace")[:400]
+        if e.code == 401:
+            raise ErroProxy(
+                f"o proxy recusou a chave (recebeu {len(key)} caracteres, "
+                f"terminando em '...{key[-4:]}'). Confira se ela foi COPIADA, "
+                "não digitada, e se o gptagent.key não tem espaço sobrando."
+            )
+        if e.code == 503:
+            raise ErroProxy(f"nenhuma conta do ChatGPT disponível agora — {detalhe}")
         raise ErroProxy(f"HTTP {e.code}: {detalhe}")
     except urllib.error.URLError as e:
         raise ErroProxy(f"não consegui falar com o proxy: {e.reason}")
