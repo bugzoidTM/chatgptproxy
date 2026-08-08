@@ -164,10 +164,29 @@ async def _current_text(page, index: int) -> str:
         return ""
 
 
-async def ask_stream(page, prompt: str, timeout: int | None = None):
+class Resposta:
+    """Carrega o texto final exato. Os deltas do streaming são uma
+    aproximação — a UI reescreve trechos enquanto renderiza —, então quem
+    precisa do texto certo (chamada não-streaming) lê daqui."""
+
+    def __init__(self):
+        self.texto = ""
+
+
+def _prefixo_comum(a: str, b: str) -> str:
+    limite = min(len(a), len(b))
+    i = 0
+    while i < limite and a[i] == b[i]:
+        i += 1
+    return a[:i]
+
+
+async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Resposta | None" = None):
     """Manda `prompt` na conversa aberta e vai entregando o texto em pedaços.
 
-    Gera strings (os deltas) e, no fim, o texto completo é a concatenação.
+    Só emite o que já está **estável** (igual em duas leituras seguidas): a UI
+    reescreve o bloco enquanto fecha um ``` , e emitir cedo demais duplicava o
+    trecho na resposta final.
     """
     timeout = timeout or config.ANSWER_TIMEOUT
     await dismiss_modals(page)
@@ -190,48 +209,50 @@ async def ask_stream(page, prompt: str, timeout: int | None = None):
     except Exception:
         pass  # resposta curta pode nem chegar a mostrar o botão de parar
 
-    sent = ""
+    enviado = ""     # o que já saiu para o cliente
+    anterior = ""    # leitura do poll anterior
     deadline = time.time() + timeout
-    stable = 0
+    parado = 0
     while time.time() < deadline:
         streaming = await stop.count() > 0
-        text = await _current_text(page, before)
-        if len(text) > len(sent) and text.startswith(sent[: len(text)]):
-            yield text[len(sent):]
-            sent = text
-        elif text and text != sent:
-            # a UI reescreveu o bloco (acontece ao fechar um ``` ): reenvia tudo
-            yield "\n" + text
-            sent = text
+        texto = await _current_text(page, before)
+
+        estavel = _prefixo_comum(texto, anterior)
+        if len(estavel) > len(enviado) and estavel.startswith(enviado):
+            yield estavel[len(enviado):]
+            enviado = estavel
+        anterior = texto
 
         if not streaming:
-            # o botão some antes do DOM assentar; confirma com o texto parado
-            stable += 1
-            if stable >= 3 and sent:
-                break
-            if stable >= 8:
+            # o botão some antes de o DOM assentar; confirma com o texto parado
+            parado += 1
+            if (parado >= 3 and texto) or parado >= 8:
                 break
         else:
-            stable = 0
+            parado = 0
         await page.wait_for_timeout(config.POLL_MS)
     else:
         raise TimeoutError(f"o ChatGPT não terminou de responder em {timeout}s")
 
     final = await _current_text(page, before)
-    if final and final != sent:
-        if final.startswith(sent):
-            yield final[len(sent):]
-        else:
-            yield "\n" + final
-        sent = final
+    if buf is not None:
+        buf.texto = final.strip()
 
-    if not sent:
+    if final != enviado:
+        if final.startswith(enviado):
+            yield final[len(enviado):]
+        else:
+            # a UI reescreveu algo que já foi emitido; não dá para retirar, então
+            # manda a versão boa a partir do ponto em que divergiu
+            yield "\n" + final[len(_prefixo_comum(final, enviado)):]
+
+    if not final:
         await dismiss_modals(page)  # levanta RateLimited se o limite entrou no meio
         raise RuntimeError("o ChatGPT não produziu resposta")
 
 
 async def ask(page, prompt: str, timeout: int | None = None) -> str:
-    parts = []
-    async for delta in ask_stream(page, prompt, timeout):
-        parts.append(delta)
-    return "".join(parts).strip()
+    buf = Resposta()
+    async for _ in ask_stream(page, prompt, timeout, buf):
+        pass
+    return buf.texto

@@ -83,9 +83,13 @@ async def _acquire_specific(acct, timeout: int):
     return acct
 
 
-async def _answer(messages: list[dict], model: str | None):
+async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta | None = None):
     """Gera os deltas da resposta. Continua a conversa quando dá, senão abre
-    uma nova; troca de conta sozinho quando a escolhida falha."""
+    uma nova; troca de conta sozinho quando a escolhida falha.
+
+    `buf` recebe o texto final exato — os deltas são aproximação (ver
+    driver.Resposta)."""
+    buf = buf if buf is not None else driver.Resposta()
     slug = _model_slug(model)
     last = messages[-1] if messages else {}
 
@@ -107,14 +111,12 @@ async def _answer(messages: list[dict], model: str | None):
                                 timeout=config.NAV_TIMEOUT * 1000,
                             )
                             await acct.page.wait_for_timeout(1500)
-                        text = []
                         async for delta in driver.ask_stream(
-                            acct.page, content_text(last.get("content"))
+                            acct.page, content_text(last.get("content")), buf=buf
                         ):
-                            text.append(delta)
                             yield delta
                         cache.put(
-                            messages + [{"role": "assistant", "content": "".join(text)}],
+                            messages + [{"role": "assistant", "content": buf.texto}],
                             acct.id, acct.page.url,
                         )
                         return
@@ -137,12 +139,10 @@ async def _answer(messages: list[dict], model: str | None):
         acct = await pool.acquire()
         try:
             await driver.open_new_chat(acct.page, slug)
-            text = []
-            async for delta in driver.ask_stream(acct.page, prompt):
-                text.append(delta)
+            async for delta in driver.ask_stream(acct.page, prompt, buf=buf):
                 yield delta
             cache.put(
-                messages + [{"role": "assistant", "content": "".join(text)}],
+                messages + [{"role": "assistant", "content": buf.texto}],
                 acct.id, acct.page.url,
             )
             return
@@ -178,11 +178,13 @@ async def chat_completions(body: dict = Body(...), authorization: str | None = H
     prompt_tokens = _tokens(json.dumps(messages, ensure_ascii=False))
 
     if not stream:
+        buf = driver.Resposta()
         try:
-            parts = [d async for d in _answer(messages, model)]
+            async for _ in _answer(messages, model, buf):
+                pass
         except Exception as e:
             raise _http_error(e)
-        text = "".join(parts).strip()
+        text = buf.texto
         return {
             "id": cid, "object": "chat.completion", "created": created, "model": model,
             "choices": [{

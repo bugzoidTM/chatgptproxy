@@ -180,15 +180,35 @@ def chamar_modelo(url: str, key: str, model: str, mensagens: list, stream: bool)
 
 
 # -------------------------------------------------------------------- parser
-BLOCO = re.compile(r"```acao\s*\n(.*?)```", re.DOTALL)
+# O rótulo `acao` NÃO sobrevive à ida e volta pela interface do ChatGPT: a UI
+# renderiza o bloco como <pre> e o nome da linguagem se perde. Por isso a busca
+# aceita qualquer bloco cercado e decide pelo conteúdo — se abre com um JSON
+# que tem "tool", é ação.
+BLOCO = re.compile(r"```([\w+-]*)[ \t]*\n(.*?)```", re.DOTALL)
 
 
 def extrair_acao(resposta: str) -> dict | None:
-    """Extrai o bloco ```acao: JSON na primeira linha + seções ---NOME---."""
-    m = BLOCO.search(resposta)
-    if not m:
+    """Extrai a ação: JSON no começo do bloco + seções ---NOME---.
+
+    Varre todos os blocos e fica com o ÚLTIMO válido — quando a UI redesenha
+    a resposta no meio do caminho, sobra um bloco truncado antes do bom.
+    """
+    candidatos = []
+    for lang, corpo in BLOCO.findall(resposta):
+        cabeca = corpo.lstrip()
+        if lang.lower() == "acao" or (cabeca.startswith("{") and '"tool"' in cabeca[:200]):
+            candidatos.append(corpo)
+    if not candidatos:
         return None
-    bruto = m.group(1)
+
+    for bruto in reversed(candidatos):
+        acao = _parsear_bloco(bruto)
+        if acao and acao.get("tool") != "__erro__":
+            return acao
+    return _parsear_bloco(candidatos[-1])
+
+
+def _parsear_bloco(bruto: str) -> dict | None:
     linhas = bruto.split("\n")
 
     cabecalho, corpo, i = [], [], 0
