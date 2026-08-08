@@ -1,0 +1,38 @@
+# Gera o gptagent.exe num runner Windows. PyInstaller não cruza-compila, e a
+# VPS é Linux — então o executável nasce aqui, e depois é servido pelo próprio
+# proxy em https://gptproxy.nutef.com/gptagent.exe
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "harness/gptagent.py"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyinstaller==6.11.1
+
+      # --onefile: um executável só, sem pasta de dependências ao lado.
+      # O harness não tem dependência externa, então o binário sai enxuto.
+      - run: pyinstaller --onefile --console --name gptagent harness/gptagent.py
+
+      - name: conferir que o binário responde
+        run: |
+          dist\gptagent.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "o exe não respondeu a --help" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gptagent-windows
+          path: dist/gptagent.exe
+          retention-days: 30

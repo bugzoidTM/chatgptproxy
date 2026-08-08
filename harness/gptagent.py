@@ -28,9 +28,35 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSAO = "1.0"
+VERSAO = "1.1"
+
+
+def _pasta_do_programa() -> Path:
+    """Onde o programa mora — no .exe é a pasta do executável, não a do script
+    temporário que o PyInstaller descompacta."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+def _chave_de_arquivo() -> str:
+    """Chave num `gptagent.key` ao lado do programa ou na pasta atual.
+
+    Existe para o .exe: quem clica num executável não define variável de
+    ambiente, e repetir --key a cada uso cansa.
+    """
+    for pasta in (_pasta_do_programa(), Path.cwd()):
+        arq = pasta / "gptagent.key"
+        try:
+            if arq.is_file():
+                return arq.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return ""
+
+
 PADRAO_URL = os.environ.get("GPTAGENT_URL", "https://gptproxy.nutef.com/v1")
-PADRAO_KEY = os.environ.get("GPTAGENT_KEY", "")
+PADRAO_KEY = os.environ.get("GPTAGENT_KEY", "") or _chave_de_arquivo()
 PADRAO_MODEL = os.environ.get("GPTAGENT_MODEL", "gpt-5")
 
 MAX_SAIDA = 6000        # caracteres de saída devolvidos ao modelo
@@ -493,6 +519,17 @@ def rodar_pedido(pedido: str, cfg, raiz: Path, mensagens: list) -> None:
     diz(f"{C.warn}parei no limite de {MAX_PASSOS} passos{C.off}")
 
 
+def _sair_com_erro(msg: str) -> int:
+    diz(f"{C.err}{msg}{C.off}")
+    # Num .exe clicado duas vezes a janela fecharia antes de o erro ser lido.
+    if getattr(sys, "frozen", False):
+        try:
+            input("\nEnter para fechar. ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="ChatGPT mexendo nos seus arquivos, via chatgptproxy")
     p.add_argument("--dir", default=".", help="diretório do projeto (padrão: atual)")
@@ -508,11 +545,12 @@ def main() -> int:
 
     raiz = Path(cfg.dir).resolve()
     if not raiz.is_dir():
-        diz(f"{C.err}não é um diretório: {raiz}{C.off}")
-        return 1
+        return _sair_com_erro(f"não é um diretório: {raiz}")
     if not cfg.key:
-        diz(f"{C.err}falta a chave do proxy (--key ou GPTAGENT_KEY){C.off}")
-        return 1
+        return _sair_com_erro(
+            "falta a chave do proxy. Use --key, ou a variável GPTAGENT_KEY, ou "
+            f"crie um arquivo 'gptagent.key' com a chave dentro em:\n  {_pasta_do_programa()}"
+        )
 
     diz(f"{C.bold}gptagent {VERSAO}{C.off}  projeto: {raiz}")
     diz(f"{C.dim}modelo {cfg.model} via {cfg.url}"
