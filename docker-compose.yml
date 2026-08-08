@@ -18,6 +18,9 @@ services:
       # Montado (em vez de copiado na imagem) para que corrigir o harness não
       # exija rebuild: editou o arquivo, o download já sai novo.
       - /home/chatgptproxy/harness:/app/harness:ro
+      # O .exe vem do runner Windows do GitHub Actions; fica fora do git (8 MB
+      # de binário não pertencem ao histórico) e é montado só para download.
+      - /home/chatgptproxy/dist:/app/dist:ro
       # /dev/shm de 64MB (padrão do Docker) sufoca o Chromium e vira timeout
       # relatado como bloqueio — lição cara aprendida no qwenproxy.
       - type: tmpfs

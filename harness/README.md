@@ -9,9 +9,31 @@ Não é mágica: o modelo não roda nada sozinho. Ele *pede* uma ação num bloc
 `--sim-a-tudo`, **toda** ação que escreve arquivo ou roda comando para e espera
 seu "s".
 
-## Instalar (Windows ou Linux)
+## Windows, sem instalar Python
 
-Copie `gptagent.py` para o seu computador. Só isso. Depois:
+Baixe o executável e ponha a chave num arquivo ao lado dele:
+
+```powershell
+Invoke-WebRequest https://gptproxy.nutef.com/gptagent.exe -OutFile gptagent.exe
+"sua-chave-do-proxy" | Out-File -Encoding ascii gptagent.key
+.\gptagent.exe --dir C:\caminho\do\projeto
+```
+
+O `gptagent.key` é procurado na pasta do executável e na pasta atual — assim
+não é preciso repetir `--key` nem mexer em variável de ambiente.
+
+**O Windows vai reclamar na primeira execução.** O binário não é assinado, e o
+SmartScreen barra o que não conhece: "Mais informações" → "Executar assim
+mesmo". Alguns antivírus também marcam executável feito com PyInstaller como
+suspeito, por falso positivo — é o preço de um `.exe` sem certificado.
+
+O executável é gerado num runner Windows do GitHub Actions
+(`.github/workflows/build-windows.yml`), porque PyInstaller não cruza-compila e
+a VPS é Linux.
+
+## Ou direto do fonte (Windows ou Linux)
+
+Copie `gptagent.py` para o seu computador. Precisa de Python 3.10+. Depois:
 
 ```powershell
 # Windows (PowerShell)

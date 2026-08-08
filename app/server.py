@@ -49,23 +49,35 @@ async def health():
     }
 
 
-@app.get("/gptagent.py")
-async def baixar_harness():
-    """Entrega o harness para o PC do dono sem depender de SSH/scp.
+# Entrega o harness ao PC do dono sem depender de SSH/scp. Aberto de propósito:
+# é um cliente sem credencial nenhuma dentro, e exigir a chave aqui seria
+# circular — é por este caminho que a chave chega à máquina dele.
+DOWNLOADS = {
+    "gptagent.py": ("/app/harness/gptagent.py", "text/x-python; charset=utf-8"),
+    "gptagent.exe": ("/app/dist/gptagent.exe", "application/octet-stream"),
+}
 
-    Aberto de propósito: é um cliente sem credencial nenhuma dentro, e exigir
-    a chave aqui seria circular — é justamente por este caminho que o dono
-    busca o arquivo antes de ter a chave na máquina.
-    """
-    caminho = "/app/harness/gptagent.py"
+
+def _entregar(nome: str) -> Response:
+    caminho, tipo = DOWNLOADS[nome]
     if not os.path.isfile(caminho):
-        raise HTTPException(404, "harness não encontrado na imagem")
-    with open(caminho, "r", encoding="utf-8") as f:
+        raise HTTPException(404, f"{nome} ainda não foi publicado no servidor")
+    with open(caminho, "rb") as f:
         return Response(
             content=f.read(),
-            media_type="text/x-python; charset=utf-8",
-            headers={"Content-Disposition": 'attachment; filename="gptagent.py"'},
+            media_type=tipo,
+            headers={"Content-Disposition": f'attachment; filename="{nome}"'},
         )
+
+
+@app.get("/gptagent.py")
+async def baixar_harness_py():
+    return _entregar("gptagent.py")
+
+
+@app.get("/gptagent.exe")
+async def baixar_harness_exe():
+    return _entregar("gptagent.exe")
 
 
 @app.get("/v1/models")
