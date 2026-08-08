@@ -15,6 +15,9 @@ services:
       NOVNC_HINT: "na VPS rode /home/chatgptproxy/novnc.sh e siga as instrucoes"
     volumes:
       - /home/chatgptproxy/profiles:/app/profiles
+      # Montado (em vez de copiado na imagem) para que corrigir o harness não
+      # exija rebuild: editou o arquivo, o download já sai novo.
+      - /home/chatgptproxy/harness:/app/harness:ro
       # /dev/shm de 64MB (padrão do Docker) sufoca o Chromium e vira timeout
       # relatado como bloqueio — lição cara aprendida no qwenproxy.
       - type: tmpfs

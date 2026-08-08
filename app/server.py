@@ -6,6 +6,7 @@ dinheiro: use timeout largo no cliente.
 """
 import asyncio
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -46,6 +47,25 @@ async def health():
         "ready": len(ready),
         "conversations": len(cache),
     }
+
+
+@app.get("/gptagent.py")
+async def baixar_harness():
+    """Entrega o harness para o PC do dono sem depender de SSH/scp.
+
+    Aberto de propósito: é um cliente sem credencial nenhuma dentro, e exigir
+    a chave aqui seria circular — é justamente por este caminho que o dono
+    busca o arquivo antes de ter a chave na máquina.
+    """
+    caminho = "/app/harness/gptagent.py"
+    if not os.path.isfile(caminho):
+        raise HTTPException(404, "harness não encontrado na imagem")
+    with open(caminho, "r", encoding="utf-8") as f:
+        return Response(
+            content=f.read(),
+            media_type="text/x-python; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="gptagent.py"'},
+        )
 
 
 @app.get("/v1/models")
