@@ -143,6 +143,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                                 timeout=config.NAV_TIMEOUT * 1000,
                             )
                             await acct.page.wait_for_timeout(1500)
+                        buf.conta = f"{acct.id}/continua"
                         async for delta in driver.ask_stream(
                             acct.page, content_text(last.get("content")), buf=buf
                         ):
@@ -154,11 +155,14 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                         return
                     except driver.RateLimited:
                         pool.mark_rate_limited(acct)
+                        print(f"[answer] {acct.id}: limite da OpenAI na continuação", flush=True)
                     except driver.SessionExpired:
                         await pool.mark_no_session(acct)
                         cache.drop_account(acct.id)
+                        print(f"[answer] {acct.id}: sessão caiu na continuação", flush=True)
                     except Exception as e:
                         acct.last_error = str(e)[:300]
+                        print(f"[answer] {acct.id}: continuação falhou: {e}", flush=True)
                     finally:
                         pool.release(acct)
                     # caiu aqui: recomeça do zero noutra conta, logo abaixo
@@ -170,6 +174,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
     for _ in range(tentativas):
         acct = await pool.acquire()
         try:
+            buf.conta = f"{acct.id}/novo"
             await driver.open_new_chat(acct.page, slug)
             async for delta in driver.ask_stream(acct.page, prompt, buf=buf):
                 yield delta
@@ -188,6 +193,11 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
         except driver.Blocked as e:
             acct.last_error = str(e)[:300]
             erro = e
+            print(f"[answer] {acct.id}: bloqueado: {e}", flush=True)
+        except Exception as e:
+            acct.last_error = str(e)[:300]
+            erro = e
+            print(f"[answer] {acct.id}: chat novo falhou: {e}", flush=True)
         finally:
             pool.release(acct)
     raise RuntimeError(f"todas as contas falharam: {erro}")
@@ -224,6 +234,7 @@ async def chat_completions(body: dict = Body(...), authorization: str | None = H
                 "message": {"role": "assistant", "content": text},
                 "finish_reason": "stop",
             }],
+            "system_fingerprint": buf.conta,
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": _tokens(text),

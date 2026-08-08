@@ -22,6 +22,10 @@ MODELS = [m.strip() for m in os.environ.get(
 NAV_TIMEOUT = int(os.environ.get("NAV_TIMEOUT", "60"))
 EDITOR_TIMEOUT = int(os.environ.get("EDITOR_TIMEOUT", "30"))
 ANSWER_TIMEOUT = int(os.environ.get("ANSWER_TIMEOUT", "600"))
+# Quanto esperar a resposta COMEÇAR antes de declarar que não veio nada. Com
+# modelo pensando, o primeiro texto demora; desistir cedo derruba a conversa
+# para outra conta à toa.
+COMECO_TIMEOUT = int(os.environ.get("COMECO_TIMEOUT", "150"))
 SLOT_WAIT_TIMEOUT = int(os.environ.get("SLOT_WAIT_TIMEOUT", "900"))
 POLL_MS = int(os.environ.get("POLL_MS", "400"))
 

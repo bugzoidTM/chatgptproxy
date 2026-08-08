@@ -6,12 +6,14 @@ já roda em produção no hubbsfield (`/opt/hubbsfield/server.py`), com o
 streaming incremental e o tratamento de sessão acrescentados aqui.
 """
 import asyncio
+import os
 import time
 
 from . import config
 
 EDITOR = "#prompt-textarea"
 ASSISTANT = '[data-message-author-role="assistant"]'
+USUARIO = '[data-message-author-role="user"]'
 STOP_BUTTON = '[data-testid="stop-button"]'
 RATE_MODAL = '[data-testid="modal-conversation-history-rate-limit"]'
 LOGIN_MARKERS = '[data-testid="login-button"], [data-testid="mobile-login-button"]'
@@ -153,15 +155,43 @@ async def wait_editor(page) -> None:
         raise Blocked("a caixa de texto do ChatGPT não apareceu")
 
 
-async def _current_text(page, index: int) -> str:
-    """Markdown da resposta de índice `index`, ou '' se ainda não existe."""
+async def _ultima_resposta(page):
+    """(locator da última resposta, id dela). (None, None) se não há nenhuma.
+
+    Identificar a resposta nova por CONTAGEM não funciona: conversa longa vira
+    lista virtualizada e o ChatGPT tira do DOM as mensagens antigas conforme
+    acrescenta as novas — o total pode ficar igual, ou até cair, com resposta
+    nova na tela. O `data-message-id` é o que identifica de verdade.
+    """
     answers = page.locator(ASSISTANT)
-    if await answers.count() <= index:
-        return ""
+    n = await answers.count()
+    if n == 0:
+        return None, None
+    ultima = answers.nth(n - 1)
     try:
-        return await answers.nth(index).evaluate(EXTRACT_MARKDOWN)
+        return ultima, await ultima.get_attribute("data-message-id")
+    except Exception:
+        return ultima, None
+
+
+async def _texto_da_nova(page, id_antes: str | None, texto_antes: str) -> str:
+    """Markdown da resposta nova, ou '' enquanto ela não existir.
+
+    Quando a página não expõe `data-message-id` (mudança de UI), cai para a
+    comparação com o texto que já estava lá antes do envio.
+    """
+    ultima, mid = await _ultima_resposta(page)
+    if ultima is None:
+        return ""
+    if mid is not None and mid == id_antes:
+        return ""  # ainda é a resposta anterior
+    try:
+        texto = await ultima.evaluate(EXTRACT_MARKDOWN)
     except Exception:
         return ""
+    if mid is None and texto == texto_antes:
+        return ""
+    return texto
 
 
 class Resposta:
@@ -171,6 +201,7 @@ class Resposta:
 
     def __init__(self):
         self.texto = ""
+        self.conta = ""   # qual conta atendeu — vai no system_fingerprint
 
 
 def _prefixo_comum(a: str, b: str) -> str:
@@ -194,28 +225,79 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
 
     answers = page.locator(ASSISTANT)
     before = await answers.count()
+    ultima_antes, id_antes = await _ultima_resposta(page)
+    texto_antes = ""
+    if ultima_antes is not None and id_antes is None:
+        try:
+            texto_antes = await ultima_antes.evaluate(EXTRACT_MARKDOWN)
+        except Exception:
+            texto_antes = ""
+    perguntas = page.locator(USUARIO)
+    perguntas_antes = await perguntas.count()
 
     editor = page.locator(EDITOR)
-    await editor.click()
-    # fill() escreve direto no contenteditable: não passa pelo handler de colar
-    # (que transformaria prompt grande em ANEXO) nem dispara o submit.
-    await editor.fill(prompt)
-    await page.wait_for_timeout(300)
-    await page.keyboard.press("Enter")
+
+    async def _enviar():
+        await editor.click()
+        # fill() escreve direto no contenteditable: não passa pelo handler de
+        # colar (que transformaria prompt grande em ANEXO) nem dispara submit.
+        await editor.fill(prompt)
+        await page.wait_for_timeout(300)
+        await page.keyboard.press("Enter")
+
+    # Ao voltar para uma conversa antiga, a caixa de texto fica visível antes de
+    # estar funcional e o Enter cai no vazio — a mensagem nunca entra. Conferir
+    # que a pergunta apareceu na conversa é a única prova de que foi enviada.
+    await _enviar()
+    for tentativa in (1, 2):
+        try:
+            await perguntas.nth(perguntas_antes).wait_for(state="attached", timeout=15000)
+            break
+        except Exception:
+            if tentativa == 1:
+                await _enviar()
+            else:
+                raise RuntimeError("a mensagem não entrou na conversa (interface não respondeu ao envio)")
 
     stop = page.locator(STOP_BUTTON)
-    try:
-        await stop.wait_for(state="visible", timeout=25000)
-    except Exception:
-        pass  # resposta curta pode nem chegar a mostrar o botão de parar
+
+    async def _comecou() -> bool:
+        """A resposta começou? (streaming em curso ou já há mensagem NOVA)"""
+        if await stop.count() > 0:
+            return True
+        return bool(await _texto_da_nova(page, id_antes, texto_antes))
+
+    # Enviar logo depois do turno anterior às vezes cai no vazio: a pergunta
+    # aparece na conversa (render otimista) e resposta nenhuma vem. Em vez de
+    # esperar 150s por algo que não virá, recarrega e reenvia UMA vez.
+    espera = time.time() + 30
+    while time.time() < espera and not await _comecou():
+        await page.wait_for_timeout(500)
+
+    if not await _comecou():
+        try:
+            await page.reload(wait_until="domcontentloaded",
+                              timeout=config.NAV_TIMEOUT * 1000)
+            await page.wait_for_timeout(3000)
+        except Exception:
+            pass
+        if not await _texto_da_nova(page, id_antes, texto_antes):  # recarga não revelou nada
+            await wait_editor(page)
+            await page.wait_for_timeout(1500)
+            await _enviar()
+            try:
+                await stop.wait_for(state="visible", timeout=25000)
+            except Exception:
+                pass
 
     enviado = ""     # o que já saiu para o cliente
     anterior = ""    # leitura do poll anterior
     deadline = time.time() + timeout
+    comeco_limite = time.time() + config.COMECO_TIMEOUT
     parado = 0
     while time.time() < deadline:
         streaming = await stop.count() > 0
-        texto = await _current_text(page, before)
+        texto = await _texto_da_nova(page, id_antes, texto_antes)
 
         estavel = _prefixo_comum(texto, anterior)
         if len(estavel) > len(enviado) and estavel.startswith(enviado):
@@ -224,17 +306,23 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
         anterior = texto
 
         if not streaming:
-            # o botão some antes de o DOM assentar; confirma com o texto parado
-            parado += 1
-            if (parado >= 3 and texto) or parado >= 8:
-                break
+            if not texto and time.time() < comeco_limite:
+                # ainda nem começou a responder. Desistir aqui (eram ~3s) fazia
+                # o proxy declarar "não produziu resposta" e jogar a conversa
+                # para outra conta sem motivo.
+                parado = 0
+            else:
+                # o botão some antes de o DOM assentar; confirma texto parado
+                parado += 1
+                if (parado >= 3 and texto) or parado >= 8:
+                    break
         else:
             parado = 0
         await page.wait_for_timeout(config.POLL_MS)
     else:
         raise TimeoutError(f"o ChatGPT não terminou de responder em {timeout}s")
 
-    final = await _current_text(page, before)
+    final = await _texto_da_nova(page, id_antes, texto_antes)
     if buf is not None:
         buf.texto = final.strip()
 
@@ -248,7 +336,24 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
 
     if not final:
         await dismiss_modals(page)  # levanta RateLimited se o limite entrou no meio
-        raise RuntimeError("o ChatGPT não produziu resposta")
+        # Sem esses números o "não produziu resposta" não diz nada: é preciso
+        # saber se a resposta nem apareceu, se apareceu vazia, e onde estava.
+        depois = await answers.count()
+        viu_stop = await stop.count() > 0
+        # Screenshot da falha: sem ver a tela, "não produziu resposta" é um
+        # beco sem saída — foi o que resolveu o mistério do 403 no qwenproxy.
+        try:
+            os.makedirs(config.PROFILES_DIR, exist_ok=True)
+            await page.screenshot(
+                path=os.path.join(config.PROFILES_DIR, f"falha_{int(time.time())}.png")
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"o ChatGPT não produziu resposta (respostas antes={before} depois={depois}, "
+            f"botão-parar={viu_stop}, esperou={int(time.time() - (deadline - timeout))}s, "
+            f"url={page.url})"
+        )
 
 
 async def ask(page, prompt: str, timeout: int | None = None) -> str:
