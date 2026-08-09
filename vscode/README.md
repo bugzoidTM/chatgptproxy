@@ -92,11 +92,15 @@ para este modelo, a indexação falha inteira.
 multiplica por 1000 por dentro; o default já é 7200 s = 2 h). É timeout de
 inatividade do socket, então não derruba resposta que ainda está pingando.
 
-**Desligue os títulos de sessão.** Painel do Continue → engrenagem (User
-Settings) → **Enable Session Titles: off**. Ligado (o default), cada conversa
-nova dispara uma requisição EXTRA com o mesmo modelo só para batizar a aba —
-aqui isso ocupa uma das 3 contas por minutos, na frente de trabalho de
-verdade.
+**Desligue os títulos de sessão.** Ligado (o default), cada conversa nova
+dispara uma requisição EXTRA com o mesmo modelo só para batizar a aba — aqui
+isso ocupa uma das 3 contas por minutos, na frente de trabalho de verdade.
+**O instalador de um comando já desliga** (grava
+`sharedConfig.disableSessionTitles: true` em
+`~/.continue/index/globalContext.json` — não há campo no config.yaml). À mão:
+painel do Continue → engrenagem (User Settings) → **Enable Session Titles:
+off**; se a página reclamar "Screen width too small", alargue o painel
+arrastando a borda esquerda dele.
 
 ### E dois avisos
 

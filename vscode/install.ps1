@@ -16,7 +16,9 @@
 #      sha256 remoto bate) + gptagent.key ao lado + PATH do usuario
 #   5. tarefas "gptagent:*" como TAREFAS DE USUARIO do VS Code (valem em
 #      qualquer projeto, sem tasks.json por pasta)
-#   6. com -Atalho: ctrl+alt+g abre "gptagent: fazer um pedido"
+#   6. desliga os titulos de sessao do Continue (cada titulo custaria uma
+#      requisicao inteira numa das 3 contas)
+#   7. com -Atalho: ctrl+alt+g abre "gptagent: fazer um pedido"
 [CmdletBinding()]
 param(
     [string]$Chave,
@@ -304,7 +306,37 @@ if (-not (Test-Path $tasksUser)) {
     }
 }
 
-# ------------------------------------------------------------ 6. atalho
+# --------------------------------------- 6. titulos de sessao do Continue
+# Cada conversa nova geraria um TITULO usando o mesmo modelo = 1 requisicao
+# extra de minutos numa das 3 contas. Nao ha campo no config.yaml; o toggle
+# da extensao persiste em sharedConfig.disableSessionTitles no
+# ~/.continue/index/globalContext.json - entao gravamos direto la.
+# JavaScriptSerializer (e nao ConvertFrom/To-Json): ele round-tripa arrays
+# sem o artefato {"value":...,"Count":N} do PS 5.1.
+Passo 'Titulos de sessao do Continue'
+$gctx = Join-Path $env:USERPROFILE '.continue\index\globalContext.json'
+try {
+    Add-Type -AssemblyName System.Web.Extensions
+    $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $dic = $null
+    if (Test-Path $gctx) { $dic = $ser.DeserializeObject([IO.File]::ReadAllText($gctx)) }
+    if ($null -eq $dic) { $dic = New-Object 'System.Collections.Generic.Dictionary[string,object]' }
+    if (-not $dic.ContainsKey('sharedConfig') -or $null -eq $dic['sharedConfig']) {
+        $dic['sharedConfig'] = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+    }
+    if ($dic['sharedConfig']['disableSessionTitles'] -eq $true) {
+        Diga 'ja desligados'
+    } else {
+        $dic['sharedConfig']['disableSessionTitles'] = $true
+        Grava $gctx ($ser.Serialize($dic))
+        Diga 'desligados (a extensao aplica ao recarregar a config)'
+    }
+} catch {
+    Avise "nao consegui gravar em $gctx ($($_.Exception.Message))."
+    Avise 'Desligue a mao: painel do Continue > engrenagem > Enable Session Titles: off.'
+}
+
+# ------------------------------------------------------------ 7. atalho
 if ($Atalho) {
     Passo 'Atalho ctrl+alt+g'
     $keyb = Join-Path $env:APPDATA 'Code\User\keybindings.json'
@@ -332,10 +364,7 @@ if ($Atalho) {
 Passo 'Pronto. O que falta e manual:'
 Diga '1. FECHE TODAS as janelas do VS Code e abra de novo - o PATH novo e a'
 Diga '   extensao so valem para processo novo.'
-Diga '2. No painel do Continue (Ctrl+L), engrenagem > User Settings: DESLIGUE'
-Diga '   "Enable Session Titles" - cada titulo custa uma requisicao inteira'
-Diga '   (minutos de uma conta) so para batizar a aba.'
-Diga '3. Fique no modo CHAT do Continue. Agent e Plan dependem de tools, que o'
+Diga '2. Fique no modo CHAT do Continue. Agent e Plan dependem de tools, que o'
 Diga '   proxy nao tem.'
 Diga ''
 Diga 'Tarefas: Ctrl+Shift+P > "Run Task" > gptagent: ... (precisa de uma pasta'
