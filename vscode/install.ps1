@@ -393,8 +393,10 @@ Diga '2. Fique no modo CHAT do Continue. Agent e Plan dependem de tools, que o'
 Diga '   proxy nao tem.'
 Diga ''
 Diga ''
+# URL do PROXY, nao do GitHub: o repositorio e privado, entao o link do GitHub
+# so abre para quem tem acesso — e o proxy serve sempre a versao no ar.
 Diga 'PASSO A PASSO do primeiro projeto (leia se e a primeira vez):'
-Diga '  https://github.com/bugzoidTM/chatgptproxy/blob/master/vscode/COMECE-AQUI.md'
+Diga "  $Base/vscode/COMECE-AQUI.md"
 Diga ''
 Diga 'Tarefas: Ctrl+Shift+P > "Executar Tarefa" / "Run Task" > gptagent: ... (precisa de uma pasta'
 Diga 'aberta; sem pasta o VS Code reclama de ${workspaceFolder}).'
