@@ -21,7 +21,9 @@ API="http://${IP}:3000"
 H="Authorization: Bearer ${KEY}"
 
 case "$1" in
-  contas)  curl -s "$API/health" | python3 -m json.tool ;;
+  # /health público não mostra mais e-mail nem URL de conversa (vazava a
+  # identidade do rodízio); o detalhe vem do endpoint autenticado.
+  contas)  curl -s -H "$H" "$API/admin/accounts" | python3 -m json.tool ;;
   login)   curl -s -X POST -H "$H" "$API/admin/login/$2" | python3 -m json.tool ;;
   refresh) curl -s -X POST -H "$H" "$API/admin/refresh/$2" | python3 -m json.tool ;;
   reset)   curl -s -X POST -H "$H" "$API/admin/reset/$2" | python3 -m json.tool ;;

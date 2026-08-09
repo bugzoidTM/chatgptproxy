@@ -2,6 +2,7 @@
 # Copie para:  Windows  C:\Users\<você>\.continue\config.yaml
 #              Linux    ~/.continue/config.yaml
 # Troque a apiKey pela sua.
+# (O instalador de um comando faz tudo isso: veja o README desta pasta.)
 name: nutef
 version: 1.0.0
 schema: v1
@@ -18,10 +19,15 @@ models:
       - edit
       - apply
     requestOptions:
-      # 15 minutos. Do outro lado há um navegador digitando: uma resposta leva
-      # de dezenas de segundos a alguns minutos. Timeout curto derruba tudo.
-      timeout: 900000
+      # Em SEGUNDOS (o Continue multiplica por 1000; o default já é 7200 = 2 h).
+      # 900 = 15 min de inatividade de socket — do outro lado há um navegador
+      # digitando, e uma resposta leva de dezenas de segundos a alguns minutos.
+      timeout: 900
     defaultCompletionOptions:
+      # Sem contextLength o Continue assume a janela do gpt-5 REAL (centenas de
+      # milhares de tokens) e nunca poda o histórico — que aqui é DIGITADO na
+      # caixa de texto do chatgpt.com. 32768 força a poda no cliente, de graça.
+      contextLength: 32768
       maxTokens: 8192
     autocompleteOptions:
       disable: true

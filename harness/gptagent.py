@@ -28,7 +28,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSAO = "1.1"
+# No console do Windows o Python já escreve UTF-8 (PEP 528), mas REDIRECIONADO
+# (> arquivo, pipe, CI) cai na ANSI code page com errors=strict — e o primeiro
+# "▸" mata o programa com UnicodeEncodeError. Força UTF-8 sempre; o "replace"
+# garante que nenhum caractere vindo do modelo derrube o harness.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+VERSAO = "1.2"
 
 
 def _pasta_do_programa() -> Path:
@@ -89,13 +99,38 @@ WINDOWS = platform.system() == "Windows"
 
 
 # ---------------------------------------------------------------- aparência
+def _ansi_ok() -> bool:
+    """O terminal integrado do VS Code — o ambiente-alvo deste setup — define
+    TERM_PROGRAM=vscode, não WT_SESSION; testar só o Windows Terminal deixava
+    o diff colorido monocromático exatamente onde ele mais importa. isatty()
+    cobre o inverso: nada de código ANSI dentro de arquivo redirecionado."""
+    if not sys.stdout.isatty():
+        return False
+    if not WINDOWS:
+        return True
+    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM") == "vscode":
+        return True
+    try:  # conhost puro: liga o suporte a VT na marra
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.GetStdHandle(-11)
+        modo = ctypes.c_uint32()
+        return bool(k32.GetConsoleMode(h, ctypes.byref(modo))
+                    and k32.SetConsoleMode(h, modo.value | 0x0004))
+    except Exception:
+        return False
+
+
+_CORES = _ansi_ok()
+
+
 class C:
-    ok = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[32m"
-    warn = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[33m"
-    err = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[31m"
-    dim = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[2m"
-    bold = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[1m"
-    off = "" if WINDOWS and not os.environ.get("WT_SESSION") else "\033[0m"
+    ok = "\033[32m" if _CORES else ""
+    warn = "\033[33m" if _CORES else ""
+    err = "\033[31m" if _CORES else ""
+    dim = "\033[2m" if _CORES else ""
+    bold = "\033[1m" if _CORES else ""
+    off = "\033[0m" if _CORES else ""
 
 
 def diz(msg: str = "") -> None:
@@ -391,15 +426,31 @@ def mostrar_diff(diff: str) -> None:
         diz(cor + linha + C.off)
 
 
+def _decodificar(b: bytes) -> str:
+    """git/python/node emitem UTF-8, mas os internos do cmd.exe (dir, findstr)
+    emitem na OEM code page (cp850 no pt-BR) — decodificar tudo como UTF-8
+    devolvia "Relat�rio" ao modelo, que passava a usar o nome errado."""
+    if not b:
+        return ""
+    tentativas = ("utf-8", "oem") if WINDOWS else ("utf-8",)
+    for enc in tentativas:
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("utf-8", "replace")
+
+
 def rodar_shell(raiz: Path, comando: str) -> str:
     try:
         r = subprocess.run(
             comando, shell=True, cwd=str(raiz), capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SHELL,
+            timeout=TIMEOUT_SHELL,
         )
     except subprocess.TimeoutExpired:
         return f"o comando estourou {TIMEOUT_SHELL}s e foi interrompido"
-    saida = (r.stdout or "") + (("\n[stderr]\n" + r.stderr) if r.stderr else "")
+    stdout, stderr = _decodificar(r.stdout), _decodificar(r.stderr)
+    saida = stdout + (("\n[stderr]\n" + stderr) if stderr else "")
     return f"[código de saída {r.returncode}]\n{saida.strip() or '(sem saída)'}"
 
 
@@ -409,7 +460,11 @@ def confirmar(pergunta: str, auto: bool) -> bool:
         return True
     try:
         resp = input(f"{C.warn}{pergunta} [s/N] {C.off}").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
+        # stdin fechado = recusa segura. KeyboardInterrupt NÃO cai aqui de
+        # propósito: Ctrl+C significa "pare tudo", não "recuse e continue" —
+        # traduzi-lo em recusa mandava o modelo para MAIS uma rodada de minutos
+        # que o usuário estava justamente tentando abortar.
         diz()
         return False
     return resp in ("s", "sim", "y", "yes")
@@ -539,7 +594,11 @@ def rodar_pedido(pedido: str, cfg, raiz: Path, mensagens: list) -> None:
                 "ou o bloco `pronto` se o trabalho acabou."})
             continue
 
-        saida, terminou = executar(acao, raiz, cfg.auto)
+        try:
+            saida, terminou = executar(acao, raiz, cfg.auto)
+        except KeyboardInterrupt:
+            diz(f"\n{C.warn}interrompido{C.off}")
+            return
         if terminou:
             diz(f"\n{C.ok}✔ {saida}{C.off}")
             return
@@ -597,7 +656,9 @@ def main() -> int:
         diz(f"{C.warn}atenção: neste modo o modelo escreve arquivos e roda comandos sem perguntar.{C.off}")
 
     mensagens = [{"role": "system", "content": SISTEMA
-                  + f"\n\nDiretório do projeto: {raiz}\nSistema: {platform.system()}"}]
+                  + f"\n\nDiretório do projeto: {raiz}\nSistema: {platform.system()}"
+                  + (" (comandos `shell` rodam no cmd.exe — sintaxe de cmd, não PowerShell)"
+                     if WINDOWS else "")}]
 
     if cfg.pedido:
         rodar_pedido(cfg.pedido, cfg, raiz, mensagens)

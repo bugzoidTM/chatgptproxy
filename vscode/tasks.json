@@ -1,14 +1,21 @@
 // Tarefas do VS Code para rodar o gptagent na pasta aberta.
-// Copie para  .vscode/tasks.json  dentro do seu projeto.
-// Se o gptagent.exe não estiver no PATH, troque "gptagent" pelo caminho
-// completo, ex.: "C:\\ferramentas\\gptagent.exe".
+// Copie para  .vscode/tasks.json  do projeto — ou melhor: use o install.ps1
+// (README desta pasta), que as instala como TAREFAS DE USUÁRIO, valendo para
+// qualquer projeto sem copiar arquivo nenhum.
+//
+// As duas tarefas do gptagent são "type": "process" DE PROPÓSITO: os args vão
+// direto ao processo, sem passar por shell nenhum. Com "type": "shell" o
+// pedido atravessaria o parser do PowerShell, onde um `$total` some (vira
+// variável vazia) e um `;` EXECUTA o que vier depois — injeção de comando num
+// campo de texto livre.
 {
   "version": "2.0.0",
   "tasks": [
     {
       "label": "gptagent: fazer um pedido",
-      "type": "shell",
+      "type": "process",
       "command": "gptagent",
+      "windows": { "command": "gptagent.exe" },
       "args": ["--dir", "${workspaceFolder}", "-p", "${input:pedido}"],
       "problemMatcher": [],
       "presentation": {
@@ -21,16 +28,21 @@
     },
     {
       "label": "gptagent: sessão interativa",
-      "type": "shell",
+      "type": "process",
       "command": "gptagent",
+      "windows": { "command": "gptagent.exe" },
       "args": ["--dir", "${workspaceFolder}"],
       "problemMatcher": [],
       "presentation": { "reveal": "always", "focus": true, "panel": "dedicated" }
     },
     {
+      // "curl.exe" com extensão no Windows: nas tasks o shell é o PowerShell,
+      // onde `curl` pelado é alias de Invoke-WebRequest — que não tem -s e
+      // trava pedindo Uri. A extensão explícita fura o alias.
       "label": "gptagent: situação das contas",
       "type": "shell",
       "command": "curl",
+      "windows": { "command": "curl.exe" },
       "args": ["-s", "https://gptproxy.nutef.com/health"],
       "problemMatcher": [],
       "presentation": { "reveal": "always", "focus": false, "panel": "shared" }

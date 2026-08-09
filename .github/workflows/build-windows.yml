@@ -1,6 +1,14 @@
 # Gera o gptagent.exe num runner Windows. PyInstaller não cruza-compila, e a
 # VPS é Linux — então o executável nasce aqui, e depois é servido pelo próprio
 # proxy em https://gptproxy.nutef.com/gptagent.exe
+#
+# A publicação é MANUAL de propósito (evita chave da VPS em secret do GitHub).
+# Na VPS, depois que o build terminar:
+#   cd /home/chatgptproxy
+#   gh run download $(gh run list -w build-windows -L1 --json databaseId -q '.[0].databaseId') \
+#      -n gptagent-windows -D dist/
+# O sha256 vai junto — é ele que deixa o install.ps1 pular download repetido
+# e conferir a integridade de um exe sem assinatura.
 name: build-windows
 
 on:
@@ -31,8 +39,16 @@ jobs:
           dist\gptagent.exe --help
           if ($LASTEXITCODE -ne 0) { throw "o exe não respondeu a --help" }
 
+      - name: sha256 ao lado do exe
+        run: |
+          $h = (Get-FileHash dist\gptagent.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("dist\gptagent.exe.sha256", "$h  gptagent.exe`n")
+          Get-Content dist\gptagent.exe.sha256
+
       - uses: actions/upload-artifact@v4
         with:
           name: gptagent-windows
-          path: dist/gptagent.exe
+          path: |
+            dist/gptagent.exe
+            dist/gptagent.exe.sha256
           retention-days: 30

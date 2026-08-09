@@ -11,21 +11,39 @@ seu "s".
 
 ## Windows, sem instalar Python
 
-Baixe o executável e ponha a chave num arquivo ao lado dele:
+O caminho fácil é o instalador de um comando, que baixa o exe, grava a chave,
+põe no PATH e ainda configura o VS Code (ver [`vscode/README.md`](../vscode/README.md)):
 
 ```powershell
-Invoke-WebRequest https://gptproxy.nutef.com/gptagent.exe -OutFile gptagent.exe
-"sua-chave-do-proxy" | Out-File -Encoding ascii gptagent.key
-.\gptagent.exe --dir C:\caminho\do\projeto
+irm https://gptproxy.nutef.com/vscode/install.ps1 | iex
 ```
 
-O `gptagent.key` é procurado na pasta do executável e na pasta atual — assim
-não é preciso repetir `--key` nem mexer em variável de ambiente.
+À mão, o equivalente é:
 
-**O Windows vai reclamar na primeira execução.** O binário não é assinado, e o
-SmartScreen barra o que não conhece: "Mais informações" → "Executar assim
-mesmo". Alguns antivírus também marcam executável feito com PyInstaller como
-suspeito, por falso positivo — é o preço de um `.exe` sem certificado.
+```powershell
+New-Item -ItemType Directory -Force $env:LOCALAPPDATA\Programs\gptagent | Out-Null
+$ProgressPreference = 'SilentlyContinue'   # a barra de progresso do PS 5.1 trava o download
+Invoke-WebRequest https://gptproxy.nutef.com/gptagent.exe -OutFile $env:LOCALAPPDATA\Programs\gptagent\gptagent.exe -UseBasicParsing
+"sua-chave-do-proxy" | Out-File -Encoding ascii $env:LOCALAPPDATA\Programs\gptagent\gptagent.key
+[Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path','User') + ';' + "$env:LOCALAPPDATA\Programs\gptagent"), 'User')
+```
+
+Depois **feche todas as janelas do VS Code e reabra**: as tarefas herdam o
+PATH do processo do VS Code, não do terminal onde você rodou isso.
+
+O `gptagent.key` é procurado na pasta do executável e na pasta atual — assim
+não é preciso repetir `--key` nem mexer em variável de ambiente. (Se um dia
+existir a variável `GPTAGENT_KEY`, ela **ganha** do arquivo — o programa avisa
+quando as duas discordam.)
+
+**Se o Windows reclamar na primeira execução:** o binário não é assinado.
+Baixado pelo navegador ele ganha a marca da internet e o SmartScreen barra
+("Mais informações" → "Executar assim mesmo"); baixado pelo
+`Invoke-WebRequest`/instalador, normalmente nem aparece aviso. Alguns
+antivírus marcam executável feito com PyInstaller como suspeito, por falso
+positivo — se o Defender quarentenar, restaure e adicione exclusão para
+`%LOCALAPPDATA%\Programs\gptagent`. Confira a integridade quando quiser:
+`Get-FileHash` do exe local contra `https://gptproxy.nutef.com/gptagent.exe.sha256`.
 
 O executável é gerado num runner Windows do GitHub Actions
 (`.github/workflows/build-windows.yml`), porque PyInstaller não cruza-compila e
@@ -97,3 +115,4 @@ Antes de gravar qualquer coisa você vê o **diff colorido** e decide.
 | `HTTP 503 ... nenhuma conta utilizável` | as contas caíram da sessão — relogin no noVNC |
 | `HTTP 429` | limite da OpenAI nas 3 contas; espere |
 | responde em prosa em vez de agir | o agente insiste sozinho uma vez; se persistir, refaça o pedido mais concreto |
+| Ctrl+C "não funciona" | no prompt `[s/N]` e durante o streaming ele age; no **silêncio** antes da resposta começar (com `--sem-stream`, principalmente) o Windows só entrega o Ctrl+C quando chegam bytes — espere o próximo delta, ou mate o terminal (lixeira do painel). Abortar no cliente **não** libera a conta no proxy: o navegador termina de digitar sozinho |

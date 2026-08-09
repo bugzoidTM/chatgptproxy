@@ -14,6 +14,9 @@ from . import config
 
 ROLE_LABEL = {
     "system": "INSTRUÇÕES DO SISTEMA",
+    # O Continue (e outros clientes) reescreve system→developer para modelos
+    # gpt-5/o-series; sem esta linha o prompt chegaria rotulado "### DEVELOPER".
+    "developer": "INSTRUÇÕES DO SISTEMA",
     "user": "USUÁRIO",
     "assistant": "ASSISTENTE",
     "tool": "SAÍDA DA FERRAMENTA",
@@ -42,8 +45,11 @@ def content_text(content) -> str:
 
 
 def fingerprint(messages: list[dict]) -> str:
+    # strip(): o driver guarda a resposta final stripada, mas o cliente acumula
+    # os deltas crus — sem normalizar, um \n de borda quebra a continuação e a
+    # conversa reabre do zero sem ninguém perceber.
     canon = [
-        {"role": m.get("role", "user"), "content": content_text(m.get("content"))}
+        {"role": m.get("role", "user"), "content": content_text(m.get("content")).strip()}
         for m in messages
     ]
     blob = json.dumps(canon, ensure_ascii=False, sort_keys=True)

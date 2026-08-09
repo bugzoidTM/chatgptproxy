@@ -32,6 +32,11 @@ POLL_MS = int(os.environ.get("POLL_MS", "400"))
 # Quantas conversas abertas guardar para continuar em vez de recomeçar.
 CONVERSATION_CACHE = int(os.environ.get("CONVERSATION_CACHE", "64"))
 
+# Teto de caracteres do texto a DIGITAR na caixa do chatgpt.com (0 desliga).
+# Prompt acima disso não entra na UI de jeito nenhum — melhor um 400 imediato
+# do que as 3 contas falhando devagar, uma por uma.
+PROMPT_MAX_CHARS = int(os.environ.get("PROMPT_MAX_CHARS", "120000"))
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 NOVNC_HINT = os.environ.get(

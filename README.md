@@ -15,7 +15,7 @@ digitar e o ChatGPT responder. Cliente precisa de **timeout largo**.
 |---|---|
 | `POST /v1/chat/completions` | streaming e não-streaming, formato OpenAI |
 | `GET /v1/models` | lista os modelos anunciados |
-| `GET /health` | situação das 3 contas (aberto, sem chave) |
+| `GET /health` | agregado das 3 contas (aberto, sem chave; **sem** e-mail/URL — o detalhe fica em `/admin/accounts`, com chave) |
 | `POST /admin/login/{conta}` | abre a tela de login e levanta a janela no noVNC |
 | `POST /admin/refresh/{conta}` | reconfere a sessão e diz **qual e-mail** entrou |
 | `POST /admin/reset/{conta}` | devolve a conta a um chat novo |
@@ -97,8 +97,15 @@ Deploy: `set -a; . ./.env; set +a; docker stack deploy -c docker-compose.yml cha
 - **O IP que o host alcança é o do `docker_gwbridge` (172.18.x)** e ele *não*
   aparece no `docker inspect` de serviço swarm — só via `hostname -I` de dentro.
 
-## Harness
+## Harness e VS Code
 
 Em [`harness/`](harness/) tem o `gptagent.py`: um agente de arquivo único que
 usa este proxy para ler e editar arquivos no seu computador. Veja o
 [README de lá](harness/README.md).
+
+Em [`vscode/`](vscode/) está a integração com o VS Code (extensão Continue +
+tarefas do gptagent) e o instalador de um comando para Windows:
+
+```powershell
+irm https://gptproxy.nutef.com/vscode/install.ps1 | iex
+```

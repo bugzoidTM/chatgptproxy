@@ -38,12 +38,21 @@ async def _shutdown():
     await pool.stop()
 
 
+# /health é aberto (o deploy e a task do VS Code dependem disso), então NÃO
+# expõe e-mail, URL de conversa nem last_error — isso identifica as contas do
+# rodízio para qualquer um com a URL. O detalhe fica em /admin/accounts, com chave.
+_HEALTH_PRIVADO = ("email", "url", "last_error")
+
+
 @app.get("/health")
 async def health():
     ready = pool.ready_accounts()
     return {
         "ok": bool(ready),
-        "accounts": [a.info() for a in pool.accounts],
+        "accounts": [
+            {k: v for k, v in a.info().items() if k not in _HEALTH_PRIVADO}
+            for a in pool.accounts
+        ],
         "ready": len(ready),
         "conversations": len(cache),
     }
@@ -55,9 +64,14 @@ async def health():
 DOWNLOADS = {
     "gptagent.py": ("/app/harness/gptagent.py", "text/x-python; charset=utf-8"),
     "gptagent.exe": ("/app/dist/gptagent.exe", "application/octet-stream"),
+    # O hash permite ao instalador pular o download quando o exe não mudou —
+    # e é a única verificação de integridade de um binário sem assinatura.
+    "gptagent.exe.sha256": ("/app/dist/gptagent.exe.sha256", "text/plain; charset=utf-8"),
     "vscode/config.yaml": ("/app/vscode/config.yaml", "text/yaml; charset=utf-8"),
     "vscode/tasks.json": ("/app/vscode/tasks.json", "application/json; charset=utf-8"),
     "vscode/README.md": ("/app/vscode/README.md", "text/markdown; charset=utf-8"),
+    # text/plain (não application/*) para `irm ... | iex` receber string pronta.
+    "vscode/install.ps1": ("/app/vscode/install.ps1", "text/plain; charset=utf-8"),
 }
 
 
@@ -82,6 +96,11 @@ async def baixar_harness_py():
 @app.get("/gptagent.exe")
 async def baixar_harness_exe():
     return _entregar("gptagent.exe")
+
+
+@app.get("/gptagent.exe.sha256")
+async def baixar_harness_exe_hash():
+    return _entregar("gptagent.exe.sha256")
 
 
 @app.get("/vscode/{nome}")
@@ -219,12 +238,34 @@ def _tokens(text: str) -> int:
     return max(1, len(text) // 4)  # estimativa: a UI não informa tokens
 
 
+def _checar_teto(messages: list[dict]) -> None:
+    """Rejeita antes de tocar nas contas o prompt que a UI não vai aceitar.
+
+    Sem isto, um histórico grande demais ocupa as 3 contas em sequência (cada
+    uma falhando devagar ao digitar) para no fim devolver um erro genérico.
+    Continuação digita só a última mensagem; chat novo digita o flatten inteiro.
+    """
+    if not config.PROMPT_MAX_CHARS:
+        return
+    if len(messages) > 1 and cache.get(messages[:-1]):
+        texto = content_text(messages[-1].get("content"))
+    else:
+        texto = flatten(messages)
+    if len(texto) > config.PROMPT_MAX_CHARS:
+        raise HTTPException(400, (
+            f"prompt de {len(texto)} caracteres excede o teto de "
+            f"{config.PROMPT_MAX_CHARS} da caixa de texto do chatgpt.com; "
+            "encurte o histórico ou o contexto anexado"
+        ))
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(body: dict = Body(...), authorization: str | None = Header(None)):
     _require_key(authorization)
     messages = body.get("messages") or []
     if not messages:
         raise HTTPException(400, "body precisa de 'messages'")
+    _checar_teto(messages)
     model = body.get("model") or config.DEFAULT_MODEL
     stream = bool(body.get("stream"))
     cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -263,17 +304,52 @@ async def chat_completions(body: dict = Body(...), authorization: str | None = H
             }
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        # A fila desacopla a produção dos deltas do envio: entre o aceite e o
+        # primeiro texto podem passar minutos (fila de conta + navegação +
+        # modelo pensando), e um intermediário com idle timeout mataria a
+        # conexão em silêncio. A cada 15 s sem delta sai um chunk vazio — todo
+        # cliente OpenAI ignora delta {} — só para manter bytes fluindo.
+        # NÃO usar comentário SSE (": ping"): o parser do Continue trata essa
+        # linha como fim de stream.
+        fila: asyncio.Queue = asyncio.Queue()
+
+        async def bombear():
+            try:
+                async for delta in _answer(messages, model):
+                    await fila.put(("delta", delta))
+                await fila.put(("fim", None))
+            except Exception as e:
+                await fila.put(("erro", e))
+
+        tarefa = asyncio.create_task(bombear())
         yield chunk({"role": "assistant", "content": ""})
         try:
-            async for delta in _answer(messages, model):
-                yield chunk({"content": delta})
-        except Exception as e:
-            err = {"error": {"message": str(e), "type": _error_type(e)}}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-        yield chunk({}, finish="stop")
-        yield "data: [DONE]\n\n"
+            while True:
+                try:
+                    tipo, valor = await asyncio.wait_for(fila.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield chunk({})
+                    continue
+                if tipo == "delta":
+                    yield chunk({"content": valor})
+                elif tipo == "fim":
+                    yield chunk({}, finish="stop")
+                    yield "data: [DONE]\n\n"
+                    return
+                else:  # erro
+                    e = valor
+                    # Chunk de texto ANTES do objeto de erro: o objeto derruba
+                    # a requisição no cliente, mas some da tela — o chunk deixa
+                    # a causa visível na própria mensagem truncada do chat.
+                    yield chunk({"content": f"\n\n⚠️ [chatgptproxy] {e}"})
+                    err = {"error": {"message": str(e), "type": _error_type(e)}}
+                    yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+        finally:
+            # Cliente desconectou (ou terminamos): interrompe o navegador e
+            # devolve a conta ao rodízio via os finally do _answer.
+            tarefa.cancel()
 
     return StreamingResponse(
         sse(),
@@ -400,4 +476,31 @@ async def _runtime_error(request, exc):
     return JSONResponse(
         status_code=503,
         content={"error": {"message": str(exc), "type": "server_error"}},
+    )
+
+
+_TIPO_POR_STATUS = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    404: "invalid_request_error",
+    409: "invalid_request_error",
+    429: "rate_limit_error",
+    503: "server_error",
+    504: "server_error",
+}
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception(request, exc: HTTPException):
+    """Envelope da OpenAI ({"error": {...}}) em vez do {"detail": ...} do
+    FastAPI — os SDKs openai extraem error.message; com "detail" o usuário vê
+    só "Bad Request" e fica sem a causa."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
+        content={"error": {
+            "message": str(exc.detail),
+            "type": _TIPO_POR_STATUS.get(exc.status_code, "api_error"),
+            "code": exc.status_code,
+        }},
     )
