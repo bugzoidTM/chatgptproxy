@@ -9,19 +9,16 @@
 set -e
 cd "$(dirname "$0")"
 
-TAG="v$(date +%Y%m%d-%H%M%S)"
+export TAG="v$(date +%Y%m%d-%H%M%S)"
 echo "==> build $TAG"
 docker build -q -t "chatgptproxy:$TAG" -t chatgptproxy:latest . >/dev/null
 
-if docker service inspect chatgptproxy_chatgptproxy >/dev/null 2>&1; then
-    echo "==> atualizando o serviço para $TAG"
-    docker service update --image "chatgptproxy:$TAG" --force \
-        chatgptproxy_chatgptproxy >/dev/null
-else
-    echo "==> primeira subida da stack"
-    set -a; . ./.env; set +a
-    docker stack deploy -c docker-compose.yml chatgptproxy >/dev/null
-fi
+# `stack deploy` (e não `service update --image`) para que mudanças no
+# docker-compose.yml — mounts novos, variáveis — também entrem. A TAG única
+# garante que a especificação mude e o swarm realmente reinicie.
+echo "==> deploy"
+set -a; . ./.env; set +a
+docker stack deploy -c docker-compose.yml chatgptproxy >/dev/null
 
 echo "==> esperando as contas voltarem"
 until curl -s --max-time 15 https://gptproxy.nutef.com/health 2>/dev/null | grep -q '"ready":3'; do

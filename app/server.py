@@ -55,6 +55,9 @@ async def health():
 DOWNLOADS = {
     "gptagent.py": ("/app/harness/gptagent.py", "text/x-python; charset=utf-8"),
     "gptagent.exe": ("/app/dist/gptagent.exe", "application/octet-stream"),
+    "vscode/config.yaml": ("/app/vscode/config.yaml", "text/yaml; charset=utf-8"),
+    "vscode/tasks.json": ("/app/vscode/tasks.json", "application/json; charset=utf-8"),
+    "vscode/README.md": ("/app/vscode/README.md", "text/markdown; charset=utf-8"),
 }
 
 
@@ -66,7 +69,8 @@ def _entregar(nome: str) -> Response:
         return Response(
             content=f.read(),
             media_type=tipo,
-            headers={"Content-Disposition": f'attachment; filename="{nome}"'},
+            headers={"Content-Disposition":
+                     f'attachment; filename="{os.path.basename(nome)}"'},
         )
 
 
@@ -78,6 +82,14 @@ async def baixar_harness_py():
 @app.get("/gptagent.exe")
 async def baixar_harness_exe():
     return _entregar("gptagent.exe")
+
+
+@app.get("/vscode/{nome}")
+async def baixar_vscode(nome: str):
+    chave = f"vscode/{nome}"
+    if chave not in DOWNLOADS:
+        raise HTTPException(404, f"não há {chave} para baixar")
+    return _entregar(chave)
 
 
 @app.get("/v1/models")

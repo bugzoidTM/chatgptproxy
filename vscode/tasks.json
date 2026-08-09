@@ -1,0 +1,46 @@
+// Tarefas do VS Code para rodar o gptagent na pasta aberta.
+// Copie para  .vscode/tasks.json  dentro do seu projeto.
+// Se o gptagent.exe não estiver no PATH, troque "gptagent" pelo caminho
+// completo, ex.: "C:\\ferramentas\\gptagent.exe".
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "gptagent: fazer um pedido",
+      "type": "shell",
+      "command": "gptagent",
+      "args": ["--dir", "${workspaceFolder}", "-p", "${input:pedido}"],
+      "problemMatcher": [],
+      "presentation": {
+        // focus: true é obrigatório — o agente PERGUNTA antes de gravar
+        // arquivo ou rodar comando, e você precisa poder digitar "s".
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "gptagent: sessão interativa",
+      "type": "shell",
+      "command": "gptagent",
+      "args": ["--dir", "${workspaceFolder}"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "focus": true, "panel": "dedicated" }
+    },
+    {
+      "label": "gptagent: situação das contas",
+      "type": "shell",
+      "command": "curl",
+      "args": ["-s", "https://gptproxy.nutef.com/health"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "focus": false, "panel": "shared" }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "pedido",
+      "type": "promptString",
+      "description": "O que você quer que ele faça neste projeto?"
+    }
+  ]
+}

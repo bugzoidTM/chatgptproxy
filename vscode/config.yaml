@@ -1,0 +1,27 @@
+# Continue (VS Code) apontando para o chatgptproxy.
+# Copie para:  Windows  C:\Users\<você>\.continue\config.yaml
+#              Linux    ~/.continue/config.yaml
+# Troque a apiKey pela sua.
+name: nutef
+version: 1.0.0
+schema: v1
+
+models:
+  - name: ChatGPT (chatgptproxy)
+    provider: openai
+    model: gpt-5
+    apiBase: https://gptproxy.nutef.com/v1
+    apiKey: COLE-SUA-CHAVE-AQUI
+    # Só estes papéis: nada de `autocomplete` nem `embed` — ver o README.
+    roles:
+      - chat
+      - edit
+      - apply
+    requestOptions:
+      # 15 minutos. Do outro lado há um navegador digitando: uma resposta leva
+      # de dezenas de segundos a alguns minutos. Timeout curto derruba tudo.
+      timeout: 900000
+    defaultCompletionOptions:
+      maxTokens: 8192
+    autocompleteOptions:
+      disable: true
