@@ -27,7 +27,10 @@
       }
     },
     {
-      "label": "gptagent: sessão interativa",
+      // Rótulos SEM acento, iguais aos que o install.ps1 grava: ele é ASCII
+      // puro (sobrevive ao `irm | iex`), e dois nomes para a mesma tarefa
+      // fariam a documentação mentir para metade dos leitores.
+      "label": "gptagent: sessao interativa",
       "type": "process",
       "command": "gptagent",
       "windows": { "command": "gptagent.exe" },
@@ -39,7 +42,7 @@
       // "curl.exe" com extensão no Windows: nas tasks o shell é o PowerShell,
       // onde `curl` pelado é alias de Invoke-WebRequest — que não tem -s e
       // trava pedindo Uri. A extensão explícita fura o alias.
-      "label": "gptagent: situação das contas",
+      "label": "gptagent: situacao das contas",
       "type": "shell",
       "command": "curl",
       "windows": { "command": "curl.exe" },

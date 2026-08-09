@@ -111,9 +111,15 @@ $dirContinue = Join-Path $env:USERPROFILE '.continue'
 $cfgContinue = Join-Path $dirContinue 'config.yaml'
 
 # Mesmo conteudo de vscode/config.yaml, com a chave aplicada.
+# O nome do modelo PRECISA sair com acento, igual ao vscode/config.yaml: e' por
+# esse nome que o usuario acha o modelo no seletor, e dois nomes para a mesma
+# coisa fariam a documentacao mentir. Este arquivo continua ASCII puro (para
+# sobreviver a qualquer charset no `irm | iex`), entao o acento entra por
+# codigo do caractere em vez de literal.
+$a_ = [char]0x00E2   # a com circunflexo
 $blocoModelo = @"
   # Instantaneo primeiro: o gpt-5 pensante leva MINUTOS por resposta na web.
-  - name: ChatGPT instantaneo (chatgptproxy)
+  - name: ChatGPT instant${a_}neo (chatgptproxy)
     provider: openai
     model: gpt-5-instant
     apiBase: $Base/v1
@@ -386,7 +392,11 @@ Diga '   extensao so valem para processo novo.'
 Diga '2. Fique no modo CHAT do Continue. Agent e Plan dependem de tools, que o'
 Diga '   proxy nao tem.'
 Diga ''
-Diga 'Tarefas: Ctrl+Shift+P > "Run Task" > gptagent: ... (precisa de uma pasta'
+Diga ''
+Diga 'PASSO A PASSO do primeiro projeto (leia se e a primeira vez):'
+Diga '  https://github.com/bugzoidTM/chatgptproxy/blob/master/vscode/COMECE-AQUI.md'
+Diga ''
+Diga 'Tarefas: Ctrl+Shift+P > "Executar Tarefa" / "Run Task" > gptagent: ... (precisa de uma pasta'
 Diga 'aberta; sem pasta o VS Code reclama de ${workspaceFolder}).'
 if ($Atalho) { Diga 'Atalho: ctrl+alt+g abre "gptagent: fazer um pedido".' }
 Diga "Terminal: gptagent --dir . -p `"seu pedido`"  (a chave ja esta em $arqChave)"

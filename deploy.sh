@@ -44,7 +44,7 @@ print('   contas prontas:', d['ready'])"
 # Downloads dependem dos bind mounts de /home/chatgptproxy — melhor descobrir
 # um mount quebrado agora do que na hora em que o dono precisar do instalador.
 echo "==> conferindo downloads"
-for rota in vscode/config.yaml vscode/install.ps1 vscode/tasks.json gptagent.exe; do
+for rota in vscode/config.yaml vscode/install.ps1 vscode/tasks.json vscode/COMECE-AQUI.md gptagent.exe; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "https://gptproxy.nutef.com/$rota")
     [ "$code" = "200" ] && echo "   ok: /$rota" || echo "   ATENÇÃO: /$rota respondeu $code"
 done

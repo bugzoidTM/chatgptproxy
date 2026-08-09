@@ -109,3 +109,6 @@ tarefas do gptagent) e o instalador de um comando para Windows:
 ```powershell
 irm https://gptproxy.nutef.com/vscode/install.ps1 | iex
 ```
+
+Nunca usou? Comece por [**Do zero ao primeiro pedido**](vscode/COMECE-AQUI.md):
+instalar, abrir um projeto novo e chegar ao primeiro resultado, passo a passo.

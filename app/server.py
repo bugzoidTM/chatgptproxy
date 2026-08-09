@@ -70,6 +70,7 @@ DOWNLOADS = {
     "vscode/config.yaml": ("/app/vscode/config.yaml", "text/yaml; charset=utf-8"),
     "vscode/tasks.json": ("/app/vscode/tasks.json", "application/json; charset=utf-8"),
     "vscode/README.md": ("/app/vscode/README.md", "text/markdown; charset=utf-8"),
+    "vscode/COMECE-AQUI.md": ("/app/vscode/COMECE-AQUI.md", "text/markdown; charset=utf-8"),
     # text/plain (não application/*) para `irm ... | iex` receber string pronta.
     "vscode/install.ps1": ("/app/vscode/install.ps1", "text/plain; charset=utf-8"),
 }

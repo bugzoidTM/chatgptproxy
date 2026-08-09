@@ -12,7 +12,9 @@ seu "s".
 ## Windows, sem instalar Python
 
 O caminho fácil é o instalador de um comando, que baixa o exe, grava a chave,
-põe no PATH e ainda configura o VS Code (ver [`vscode/README.md`](../vscode/README.md)):
+põe no PATH e ainda configura o VS Code (passo a passo em
+[`vscode/COMECE-AQUI.md`](../vscode/COMECE-AQUI.md); referência das opções em
+[`vscode/README.md`](../vscode/README.md)):
 
 ```powershell
 irm https://gptproxy.nutef.com/vscode/install.ps1 | iex
