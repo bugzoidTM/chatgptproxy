@@ -167,7 +167,13 @@ if (-not (Test-Path $cfgContinue)) {
     } else {
         $iModels = -1
         for ($i = 0; $i -lt $linhas.Count; $i++) {
-            if ($linhas[$i] -match '^models:\s*$') { $iModels = $i; break }
+            # "models:" solto OU o "models: []" do esqueleto que a extensao
+            # cria sozinha na primeira ativacao - o [] vazio vira nossa lista.
+            if ($linhas[$i] -match '^models:\s*(\[\s*\])?\s*$') {
+                $iModels = $i
+                $linhas[$i] = 'models:'
+                break
+            }
         }
         if ($iModels -ge 0) {
             # Ha outros modelos: INSERE o nosso no topo da lista, sem mexer neles.
@@ -264,8 +270,11 @@ $tarefasJson = @'
 ]
 '@ -replace '__BASE__', $Base
 $entradaJson = '[{ "id": "pedido", "type": "promptString", "description": "O que voce quer que ele faca neste projeto?" }]'
-$tarefas = ConvertFrom-Json $tarefasJson
-$entradas = ConvertFrom-Json $entradaJson
+# O ForEach-Object desembrulha o PSObject que o ConvertFrom-Json poe em volta
+# de array: sem ele o ConvertTo-Json final grava {"value":[...],"Count":N} no
+# lugar da lista - e o VS Code ignora o tasks.json inteiro.
+$tarefas = @((ConvertFrom-Json $tarefasJson) | ForEach-Object { $_ })
+$entradas = @((ConvertFrom-Json $entradaJson) | ForEach-Object { $_ })
 
 if (-not (Test-Path $tasksUser)) {
     $doc = [pscustomobject]@{ version = '2.0.0'; tasks = $tarefas; inputs = $entradas }
@@ -284,13 +293,13 @@ if (-not (Test-Path $tasksUser)) {
             $doc | Add-Member -NotePropertyName version -NotePropertyValue '2.0.0'
         }
         $existentes = @()
-        if ($doc.PSObject.Properties['tasks'] -and $doc.tasks) { $existentes = @($doc.tasks) }
+        if ($doc.PSObject.Properties['tasks'] -and $doc.tasks) { $existentes = @($doc.tasks | ForEach-Object { $_ }) }
         $mantidas = @($existentes | Where-Object { $_.label -notlike 'gptagent:*' })
-        $doc | Add-Member -NotePropertyName tasks -NotePropertyValue @($mantidas + $tarefas) -Force
+        $doc | Add-Member -NotePropertyName tasks -NotePropertyValue @(($mantidas + $tarefas) | ForEach-Object { $_ }) -Force
         $entradasVelhas = @()
-        if ($doc.PSObject.Properties['inputs'] -and $doc.inputs) { $entradasVelhas = @($doc.inputs) }
+        if ($doc.PSObject.Properties['inputs'] -and $doc.inputs) { $entradasVelhas = @($doc.inputs | ForEach-Object { $_ }) }
         $outras = @($entradasVelhas | Where-Object { $_.id -ne 'pedido' })
-        $doc | Add-Member -NotePropertyName inputs -NotePropertyValue @($outras + $entradas) -Force
+        $doc | Add-Member -NotePropertyName inputs -NotePropertyValue @(($outras + $entradas) | ForEach-Object { $_ }) -Force
         Grava $tasksUser (ConvertTo-Json $doc -Depth 12)
     }
 }

@@ -20,6 +20,15 @@ echo "==> deploy"
 set -a; . ./.env; set +a
 docker stack deploy -c docker-compose.yml chatgptproxy >/dev/null
 
+# Primeiro o CONTAINER novo, depois a saúde. Sem a primeira espera, o /health
+# de quem responde é o container VELHO (update é stop-first, mas o stack deploy
+# retorna antes de trocar) — e o script declara vitória com o código antigo no
+# ar. Foi exatamente assim que o deploy do install.ps1 "passou" servindo 404.
+echo "==> esperando o container da imagem $TAG"
+until [ "$(docker ps --filter name=chatgptproxy_chatgptproxy --format '{{.Image}}' | head -1)" = "chatgptproxy:$TAG" ]; do
+    sleep 5
+done
+
 echo "==> esperando as contas voltarem"
 until curl -s --max-time 15 https://gptproxy.nutef.com/health 2>/dev/null | grep -q '"ready":3'; do
     sleep 10
