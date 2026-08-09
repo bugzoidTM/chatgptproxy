@@ -246,7 +246,7 @@ $tarefasJson = @'
   {
     "label": "gptagent: fazer um pedido",
     "type": "process",
-    "command": "gptagent.exe",
+    "command": "${env:LOCALAPPDATA}\\Programs\\gptagent\\gptagent.exe",
     "args": ["--dir", "${workspaceFolder}", "-p", "${input:pedido}"],
     "problemMatcher": [],
     "presentation": { "reveal": "always", "focus": true, "panel": "dedicated" }
@@ -254,7 +254,7 @@ $tarefasJson = @'
   {
     "label": "gptagent: sessao interativa",
     "type": "process",
-    "command": "gptagent.exe",
+    "command": "${env:LOCALAPPDATA}\\Programs\\gptagent\\gptagent.exe",
     "args": ["--dir", "${workspaceFolder}"],
     "problemMatcher": [],
     "presentation": { "reveal": "always", "focus": true, "panel": "dedicated" }
