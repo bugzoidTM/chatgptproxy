@@ -78,10 +78,15 @@ python3 gptagent.py --dir . -p "adicione tratamento de erro no upload"
 | `--dir` | diretório do projeto. **Nada fora dele é acessível** (padrão: atual) |
 | `--url` | endpoint do proxy (padrão `https://gptproxy.nutef.com/v1`) |
 | `--key` | chave do proxy (ou variável `GPTAGENT_KEY`) |
-| `--model` | padrão `gpt-5` |
+| `--model` | padrão `gpt-5-instant` — segundos por passo. Use `gpt-5` (pensante, MINUTOS por passo) só quando o problema exigir raciocínio pesado |
 | `-p` | executa um pedido e sai |
 | `--sim-a-tudo` | não pergunta antes de escrever nem de rodar comando |
 | `--sem-stream` | não mostra a resposta sendo escrita |
+
+Desde a 1.3 o modelo pode mandar **várias ações num turno só** (escrever dois
+arquivos e rodar os testes = uma ida ao navegador, não três) — é o que torna o
+agente utilizável em cima de um backend em que cada ida custa segundos a
+minutos.
 
 ## O que o modelo pode pedir
 

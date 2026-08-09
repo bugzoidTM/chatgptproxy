@@ -8,7 +8,26 @@ version: 1.0.0
 schema: v1
 
 models:
-  - name: ChatGPT (chatgptproxy)
+  # Instantâneo primeiro: na web, o gpt-5 "pensante" leva MINUTOS por resposta;
+  # para conversa e edição no editor o instant responde em segundos. Troque
+  # para o pensante no seletor de modelo quando o problema for difícil.
+  - name: ChatGPT instantâneo (chatgptproxy)
+    provider: openai
+    model: gpt-5-instant
+    apiBase: https://gptproxy.nutef.com/v1
+    apiKey: COLE-SUA-CHAVE-AQUI
+    roles:
+      - chat
+      - edit
+      - apply
+    requestOptions:
+      timeout: 900
+    defaultCompletionOptions:
+      contextLength: 32768
+      maxTokens: 8192
+    autocompleteOptions:
+      disable: true
+  - name: ChatGPT pensante (chatgptproxy)
     provider: openai
     model: gpt-5
     apiBase: https://gptproxy.nutef.com/v1

@@ -14,7 +14,10 @@ Uso:
 Configuração (variáveis de ambiente ou flags):
     GPTAGENT_URL      padrão https://gptproxy.nutef.com/v1
     GPTAGENT_KEY      a chave do proxy
-    GPTAGENT_MODEL    padrão gpt-5
+    GPTAGENT_MODEL    padrão gpt-5-instant — na web, o gpt-5 "pensante" leva
+                      MINUTOS por passo; para os passos mecânicos de um agente
+                      o instant responde em segundos. Use --model gpt-5 quando
+                      o problema exigir raciocínio pesado.
 """
 import argparse
 import difflib
@@ -38,7 +41,7 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-VERSAO = "1.2"
+VERSAO = "1.3"
 
 
 def _pasta_do_programa() -> Path:
@@ -89,10 +92,12 @@ def _resolver_chave() -> tuple[str, str, str]:
 
 PADRAO_URL = os.environ.get("GPTAGENT_URL", "https://gptproxy.nutef.com/v1")
 PADRAO_KEY, ORIGEM_KEY, CONFLITO_KEY = _resolver_chave()
-PADRAO_MODEL = os.environ.get("GPTAGENT_MODEL", "gpt-5")
+PADRAO_MODEL = os.environ.get("GPTAGENT_MODEL", "gpt-5-instant")
 
-MAX_SAIDA = 6000        # caracteres de saída devolvidos ao modelo
-MAX_PASSOS = 40         # teto de ações por pedido
+MAX_SAIDA = 6000        # caracteres de saída devolvidos ao modelo, por ação
+MAX_SAIDA_TURNO = 12000  # teto do turno inteiro (várias ações)
+MAX_PASSOS = 40         # teto de idas ao modelo por pedido
+MAX_ACOES_TURNO = 8     # teto de ações executadas por resposta do modelo
 TIMEOUT_SHELL = 300     # segundos
 
 WINDOWS = platform.system() == "Windows"
@@ -142,13 +147,13 @@ SISTEMA = """Você é um agente de programação que trabalha nos arquivos de um
 
 ## Como agir
 
-Para fazer qualquer coisa, responda com UM ÚNICO bloco ```acao e MAIS NADA — sem texto antes ou depois. Eu executo e devolvo a saída na mensagem seguinte. Você lê a saída e manda a próxima ação. Um passo por vez.
+Para fazer qualquer coisa, responda APENAS com blocos ```acao — sem texto antes, entre ou depois. Pode mandar UM bloco ou VÁRIOS: eu executo todos NA ORDEM e devolvo as saídas numeradas na mensagem seguinte. Cada ida sua até mim é LENTA (minutos), então AGRUPE no mesmo turno tudo que não depende de saída que você ainda não viu — por exemplo: escrever dois arquivos E rodar os testes é UM turno com três blocos, não três turnos. Se uma ação falhar ou for recusada, as seguintes do turno não executam.
 
-O bloco começa com uma linha JSON e pode trazer seções de texto cru depois, cada uma aberta por uma linha `---NOME---`. Dentro das seções NÃO se escapa nada: escreva o conteúdo literal.
+Cada bloco começa com uma linha JSON e pode trazer seções de texto cru depois, cada uma aberta por uma linha `---NOME---`. Dentro das seções NÃO se escapa nada: escreva o conteúdo literal.
 
 REGRA ABSOLUTA: nunca afirme que leu, criou, alterou ou testou algo antes de ter recebido de mim a saída correspondente. Se você não viu a saída, o trabalho não foi feito.
 
-Sua PRIMEIRA resposta já deve ser um bloco ```acao (normalmente `listar` ou `ler`, para conhecer o terreno antes de mudar qualquer coisa). Não responda "entendi" nem descreva planos em prosa.
+Sua PRIMEIRA resposta já deve ser de blocos ```acao (normalmente `listar` e os `ler` que interessarem, juntos, para conhecer o terreno antes de mudar qualquer coisa). Não responda "entendi" nem descreva planos em prosa.
 
 ## Ações
 
@@ -191,7 +196,7 @@ Salvar no git (add + commit + push de uma vez):
 {"tool": "git", "mensagem": "conserta o login vazio"}
 ```
 
-Terminar — só quando o trabalho estiver pronto E verificado pela saída dos comandos:
+Terminar — só quando o trabalho estiver pronto E verificado pela saída dos comandos (o `pronto` deve ser o ÚNICO bloco do turno):
 ```acao
 {"tool": "pronto"}
 ---CONTEUDO---
@@ -278,11 +283,14 @@ def chamar_modelo(url: str, key: str, model: str, mensagens: list, stream: bool)
 BLOCO = re.compile(r"```([\w+-]*)[ \t]*\n(.*?)```", re.DOTALL)
 
 
-def extrair_acao(resposta: str) -> dict | None:
-    """Extrai a ação: JSON no começo do bloco + seções ---NOME---.
+def extrair_acoes(resposta: str) -> list[dict]:
+    """Extrai TODAS as ações da resposta, na ordem: JSON no começo de cada
+    bloco + seções ---NOME---.
 
-    Varre todos os blocos e fica com o ÚLTIMO válido — quando a UI redesenha
-    a resposta no meio do caminho, sobra um bloco truncado antes do bom.
+    Blocos inválidos são descartados, salvo quando não sobra nenhum válido —
+    aí o erro de parse volta para o modelo corrigir. Blocos idênticos
+    consecutivos são deduplicados: quando a UI redesenha a resposta no meio do
+    caminho, o mesmo bloco pode aparecer duas vezes.
     """
     candidatos = []
     for lang, corpo in BLOCO.findall(resposta):
@@ -290,13 +298,22 @@ def extrair_acao(resposta: str) -> dict | None:
         if lang.lower() == "acao" or (cabeca.startswith("{") and '"tool"' in cabeca[:200]):
             candidatos.append(corpo)
     if not candidatos:
-        return None
+        return []
 
-    for bruto in reversed(candidatos):
+    acoes, invalidas = [], []
+    for bruto in candidatos:
         acao = _parsear_bloco(bruto)
-        if acao and acao.get("tool") != "__erro__":
-            return acao
-    return _parsear_bloco(candidatos[-1])
+        if acao is None:
+            continue
+        if acao.get("tool") == "__erro__":
+            invalidas.append(acao)
+            continue
+        if acoes and acao == acoes[-1]:
+            continue  # redesenho da UI duplicou o bloco
+        acoes.append(acao)
+    if not acoes and invalidas:
+        return [invalidas[-1]]
+    return acoes
 
 
 def _parsear_bloco(bruto: str) -> dict | None:
@@ -585,25 +602,45 @@ def rodar_pedido(pedido: str, cfg, raiz: Path, mensagens: list) -> None:
             return
         mensagens.append({"role": "assistant", "content": resposta})
 
-        acao = extrair_acao(resposta)
-        if acao is None:
+        acoes = extrair_acoes(resposta)
+        if not acoes:
             if not cfg.stream:
                 diz(resposta.strip())
             mensagens.append({"role": "user", "content":
-                "Você respondeu em prosa. Mande UM bloco ```acao com a próxima ação, "
-                "ou o bloco `pronto` se o trabalho acabou."})
+                "Você respondeu em prosa. Mande blocos ```acao com as próximas ações "
+                "(pode ser mais de um), ou o bloco `pronto` se o trabalho acabou."})
             continue
 
-        try:
-            saida, terminou = executar(acao, raiz, cfg.auto)
-        except KeyboardInterrupt:
-            diz(f"\n{C.warn}interrompido{C.off}")
-            return
-        if terminou:
-            diz(f"\n{C.ok}✔ {saida}{C.off}")
-            return
-        diz(f"{C.dim}{saida[:800]}{C.off}" if len(saida) > 800 else f"{C.dim}{saida}{C.off}")
-        mensagens.append({"role": "user", "content": f"SAÍDA:\n```\n{encurtar(saida)}\n```"})
+        # Executa o LOTE inteiro na ordem — cada ida ao modelo custa minutos,
+        # então o turno carrega quantas ações o modelo conseguiu agrupar.
+        saidas = []
+        for n, acao in enumerate(acoes[:MAX_ACOES_TURNO], 1):
+            try:
+                saida, terminou = executar(acao, raiz, cfg.auto)
+            except KeyboardInterrupt:
+                diz(f"\n{C.warn}interrompido{C.off}")
+                return
+            if terminou:
+                diz(f"\n{C.ok}✔ {saida}{C.off}")
+                return
+            diz(f"{C.dim}{saida[:800]}{C.off}" if len(saida) > 800 else f"{C.dim}{saida}{C.off}")
+            rotulo = f"### ação {n} ({(acao.get('tool') or '?')})" if len(acoes) > 1 else ""
+            saidas.append((rotulo + "\n" if rotulo else "") + encurtar(saida))
+            # Falha de parse ou recusa do dono invalida o resto do plano do
+            # turno — o modelo precisa VER isso antes de seguir.
+            if acao.get("tool") == "__erro__" or saida.startswith("o dono recusou"):
+                pulados = len(acoes) - n
+                if pulados > 0:
+                    saidas.append(f"(as {pulados} ações seguintes deste turno NÃO foram executadas)")
+                break
+        else:
+            if len(acoes) > MAX_ACOES_TURNO:
+                saidas.append(f"(teto de {MAX_ACOES_TURNO} ações por turno; as demais não executaram)")
+
+        corpo = "\n\n".join(saidas)
+        if len(corpo) > MAX_SAIDA_TURNO:
+            corpo = encurtar(corpo[:MAX_SAIDA_TURNO * 2])[:MAX_SAIDA_TURNO]
+        mensagens.append({"role": "user", "content": f"SAÍDA:\n```\n{corpo}\n```"})
 
     diz(f"{C.warn}parei no limite de {MAX_PASSOS} passos{C.off}")
 

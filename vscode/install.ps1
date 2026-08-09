@@ -112,12 +112,12 @@ $cfgContinue = Join-Path $dirContinue 'config.yaml'
 
 # Mesmo conteudo de vscode/config.yaml, com a chave aplicada.
 $blocoModelo = @"
-  - name: ChatGPT (chatgptproxy)
+  # Instantaneo primeiro: o gpt-5 pensante leva MINUTOS por resposta na web.
+  - name: ChatGPT instantaneo (chatgptproxy)
     provider: openai
-    model: gpt-5
+    model: gpt-5-instant
     apiBase: $Base/v1
     apiKey: $Chave
-    # Sem autocomplete nem embed: resposta leva minutos (ver README).
     roles:
       - chat
       - edit
@@ -127,6 +127,22 @@ $blocoModelo = @"
       timeout: 900
     defaultCompletionOptions:
       # Forca a poda de historico no cliente - aqui o prompt e DIGITADO.
+      contextLength: 32768
+      maxTokens: 8192
+    autocompleteOptions:
+      disable: true
+  - name: ChatGPT pensante (chatgptproxy)
+    provider: openai
+    model: gpt-5
+    apiBase: $Base/v1
+    apiKey: $Chave
+    roles:
+      - chat
+      - edit
+      - apply
+    requestOptions:
+      timeout: 900
+    defaultCompletionOptions:
       contextLength: 32768
       maxTokens: 8192
     autocompleteOptions:
@@ -151,18 +167,21 @@ if (-not (Test-Path $cfgContinue)) {
         if ($linhas[$i] -match [regex]::Escape("$Base/v1")) { $iBase = $i; break }
     }
     if ($iBase -ge 0) {
-        # Nosso bloco ja existe: atualiza SO a apiKey dele (a proxima linha
-        # apiKey depois do apiBase, antes de comecar outro modelo).
+        # Nossos blocos ja existem: atualiza a apiKey de CADA bloco que aponta
+        # para o proxy (a proxima linha apiKey depois de cada apiBase nosso).
         $mudou = $false
-        for ($i = $iBase; $i -lt [Math]::Min($iBase + 12, $linhas.Count); $i++) {
-            if ($linhas[$i] -match '^(\s*)apiKey:\s*(.*)$') {
-                if ($Matches[2].Trim() -ne $Chave) {
-                    $linhas[$i] = "$($Matches[1])apiKey: $Chave"
-                    $mudou = $true
+        for ($b = 0; $b -lt $linhas.Count; $b++) {
+            if ($linhas[$b] -notmatch [regex]::Escape("$Base/v1")) { continue }
+            for ($i = $b; $i -lt [Math]::Min($b + 12, $linhas.Count); $i++) {
+                if ($linhas[$i] -match '^(\s*)apiKey:\s*(.*)$') {
+                    if ($Matches[2].Trim() -ne $Chave) {
+                        $linhas[$i] = "$($Matches[1])apiKey: $Chave"
+                        $mudou = $true
+                    }
+                    break
                 }
-                break
+                if ($i -gt $b -and $linhas[$i] -match '^\s*-\s+name:') { break }
             }
-            if ($i -gt $iBase -and $linhas[$i] -match '^\s*-\s+name:') { break }
         }
         if ($mudou) { Grava $cfgContinue (($linhas -join "`r`n") + "`r`n") }
         else { Diga 'ja aponta para o proxy com esta chave' }
