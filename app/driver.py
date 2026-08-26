@@ -16,7 +16,12 @@ ASSISTANT = '[data-message-author-role="assistant"]'
 USUARIO = '[data-message-author-role="user"]'
 STOP_BUTTON = '[data-testid="stop-button"]'
 RATE_MODAL = '[data-testid="modal-conversation-history-rate-limit"]'
-LOGIN_MARKERS = '[data-testid="login-button"], [data-testid="mobile-login-button"]'
+CLICK_TIMEOUT_MS = 10000
+# `#modal-no-auth-login` entrou depois de 2026-08-21: naquele dia ele ficou por
+# cima da caixa de texto sem trazer botao com esses data-testid, entao a sessao
+# morta passou por "editor visivel" e o envio so estourou no clique.
+LOGIN_MARKERS = ('[data-testid="login-button"], [data-testid="mobile-login-button"], '
+                 '#modal-no-auth-login')
 
 # inner_text descarta as crases dos blocos de código (a UI os renderiza como
 # <pre> com rótulo de linguagem). Sem remontar o markdown, o harness não
@@ -133,16 +138,55 @@ async def open_new_chat(page, model: str | None = None) -> None:
     await page.wait_for_timeout(2500)
 
 
+async def sessao_caiu(page) -> bool:
+    """A pagina esta oferecendo login? E o unico sinal honesto de sessao morta.
+
+    Exige o marcador VISIVEL, nao apenas presente no DOM: esta funcao agora roda
+    tambem no caminho feliz (todo envio passa por ela), e um botao de login
+    escondido no DOM de uma pagina logada tiraria as tres contas do rodizio e
+    acordaria o dono a toa. Alarme falso custa mais caro que deteccao tardia.
+    """
+    try:
+        loc = page.locator(LOGIN_MARKERS)
+        for i in range(min(await loc.count(), 4)):
+            if await loc.nth(i).is_visible():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def erro_de_clique(page, e: Exception) -> Exception:
+    """Traduz um clique que nao foi no que ele significa.
+
+    Antes de 2026-08-26 o clique estourava em 30s e subia como excecao generica:
+    o servidor rodava para a proxima conta sem avisar ninguem, e a conta com a
+    sessao morta continuava "ready" no rodizio.
+    """
+    if await sessao_caiu(page):
+        return SessionExpired("sessão caiu: a página está oferecendo login")
+    return Blocked(f"a caixa de texto não aceitou o clique: {e}")
+
+
 async def wait_editor(page) -> None:
     """Garante a caixa de texta pronta, resolvendo desafio/sessão pelo caminho."""
     editor = page.locator(EDITOR)
     try:
         await editor.wait_for(state="visible", timeout=config.EDITOR_TIMEOUT * 1000)
+        # O editor ficar VISIVEL nao prova que da para escrever nele: com o
+        # modal de login por cima ele continua visivel e so o clique estoura,
+        # 30s depois, como erro generico -- sem alerta e sem tirar a conta do
+        # rodizio (foi assim em 2026-08-21). Conferir o login aqui e o que
+        # transforma isso em SessionExpired na hora certa.
+        if await sessao_caiu(page):
+            raise SessionExpired("sessão caiu: a página está oferecendo login")
         return
+    except SessionExpired:
+        raise
     except Exception:
         pass
 
-    if await page.locator(LOGIN_MARKERS).count():
+    if await sessao_caiu(page):
         raise SessionExpired("sessão caiu: a página está oferecendo login")
 
     if not await try_solve_turnstile(page):
@@ -150,7 +194,7 @@ async def wait_editor(page) -> None:
     try:
         await editor.wait_for(state="visible", timeout=config.EDITOR_TIMEOUT * 1000)
     except Exception:
-        if await page.locator(LOGIN_MARKERS).count():
+        if await sessao_caiu(page):
             raise SessionExpired("sessão caiu: a página está oferecendo login")
         raise Blocked("a caixa de texto do ChatGPT não apareceu")
 
@@ -238,7 +282,14 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     editor = page.locator(EDITOR)
 
     async def _enviar():
-        await editor.click()
+        # Timeout curto de proposito: o padrao do Playwright (30s) fazia cada
+        # conta queimar meio minuto antes de rodar para a proxima, e o erro
+        # saia generico. Se o clique nao vai agora, alguma coisa esta por cima
+        # -- e quem diz o que e o diagnostico abaixo, nao a espera.
+        try:
+            await editor.click(timeout=CLICK_TIMEOUT_MS)
+        except Exception as e:
+            raise await erro_de_clique(page, e) from e
         # fill() escreve direto no contenteditable: não passa pelo handler de
         # colar (que transformaria prompt grande em ANEXO) nem dispara submit.
         await editor.fill(prompt)

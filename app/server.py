@@ -180,6 +180,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                             acct.page, content_text(last.get("content")), buf=buf
                         ):
                             yield delta
+                        pool.mark_ok(acct)
                         cache.put(
                             messages + [{"role": "assistant", "content": buf.texto}],
                             acct.id, acct.page.url,
@@ -210,6 +211,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
             await driver.open_new_chat(acct.page, slug)
             async for delta in driver.ask_stream(acct.page, prompt, buf=buf):
                 yield delta
+            pool.mark_ok(acct)
             cache.put(
                 messages + [{"role": "assistant", "content": buf.texto}],
                 acct.id, acct.page.url,

@@ -16,6 +16,10 @@ from . import config, driver, notify
 # Cascata das janelas na tela 1920x1080: dá para alcançar as três no noVNC.
 _WINDOW_SIZE = (1400, 950)
 _CASCADE = 110
+# Intervalo da sonda de sessao nas contas PRONTAS (o watcher roda de 10 em 10min;
+# 30min e o suficiente para pegar uma sessao morta antes do proximo pedido sem
+# ficar batendo em /api/auth/session a toa).
+_SONDA_OK = 30 * 60
 
 
 class Account:
@@ -206,6 +210,16 @@ class Pool:
         if acct.lock.locked():
             acct.lock.release()
 
+    def mark_ok(self, acct: Account) -> None:
+        """Requisicao respondeu: apaga o erro antigo.
+
+        Sem isto o `last_error` fica colado para sempre -- em 26/08/2026 as tres
+        contas exibiam no `admin.sh contas` um erro de CINCO DIAS antes enquanto
+        respondiam normalmente. Erro velho na tela e ruido exatamente na hora em
+        que se esta diagnosticando.
+        """
+        acct.last_error = ""
+
     def mark_rate_limited(self, acct: Account, seconds: int = 600) -> None:
         acct.rate_limited_until = time.time() + seconds
         acct.last_error = f"limite da OpenAI; fora do rodízio por {seconds}s"
@@ -220,17 +234,42 @@ class Pool:
 
     async def _watch(self) -> None:
         """De 10 em 10 minutos reconfere quem está sem sessão — assim uma conta
-        relogada volta sozinha ao rodízio."""
+        relogada volta sozinha ao rodízio.
+
+        E de `_SONDA_OK` em `_SONDA_OK` reconfere também quem está PRONTO: uma
+        sessão que morre em silêncio ficava "ready" até alguém pedir alguma
+        coisa e a chamada falhar. A sonda é um `/api/auth/session` por conta —
+        barata o bastante para não valer a pena adivinhar.
+        """
+        proxima_sonda = time.time() + _SONDA_OK
         while True:
             await asyncio.sleep(600)
+            sondar_prontas = time.time() >= proxima_sonda
+            if sondar_prontas:
+                proxima_sonda = time.time() + _SONDA_OK
             for acct in self.accounts:
                 if acct.busy:
                     continue
-                if acct.status in ("no-session", "error") and acct.context:
-                    try:
-                        await self.refresh(acct)
-                    except Exception as e:
-                        acct.last_error = str(e)[:300]
+                caiu = acct.status in ("no-session", "error")
+                if not acct.context:
+                    continue
+                if not (caiu or (sondar_prontas and acct.status == "ready")):
+                    continue
+                # Sondar conta pronta segura o lock: `session_email` nao navega
+                # (usa `page.request`), mas `refresh` mexe no titulo da janela e
+                # nao vale a pena disputar a pagina com uma resposta em curso.
+                # Quem ja caiu esta fora do rodizio, ninguem vai pega-la.
+                if not caiu:
+                    if acct.lock.locked():
+                        continue
+                    await acct.lock.acquire()
+                try:
+                    await self.refresh(acct)
+                except Exception as e:
+                    acct.last_error = str(e)[:300]
+                finally:
+                    if not caiu:
+                        self.release(acct)
 
     async def stop(self) -> None:
         for acct in self.accounts:
