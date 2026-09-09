@@ -9,7 +9,11 @@ services:
     #    builds, o swarm acha que não há o que fazer e o deploy vira NO-OP
     #    SILENCIOSO — horas de depuração em cima de código que nunca subiu.
     # Tag única por build resolve os dois. Use SEMPRE ./deploy.sh.
-    image: chatgptproxy:${TAG:-latest}
+    # ARMADILHA (2026-09-09): o default era `latest`, tag que NUNCA existiu
+    # nesta VPS — as imagens são datadas. Um `stack deploy` sem TAG no ambiente
+    # trocava a imagem do serviço por uma inexistente e derrubava o proxy com
+    # "No such image", sem relação aparente com o que se estava mudando.
+    image: chatgptproxy:${TAG:-v20260826-110744}
     environment:
       PORT: "3000"
       API_KEY: "${API_KEY}"
@@ -47,7 +51,14 @@ services:
         condition: any
       resources:
         limits:
-          memory: 8G
+          # 2026-09-09: com 8G o container vivia em ~6,4G (tres janelas do
+          # Chromium abertas) e o renderer MORRIA ao receber prompt grande — o
+          # sintoma chegava como "Page crashed" e, no cliente, como
+          # `Locator.fill`/`Page.goto` estourando, o que mandava procurar
+          # defeito na UI do ChatGPT em vez de na memoria. O `reset` "resolvia"
+          # porque liberava memoria, e por isso a falha parecia intermitente.
+          # O host tem 32G, com ~15G livres.
+          memory: 12G
       labels:
         traefik.enable: "true"
         traefik.http.routers.chatgptproxy.rule: "Host(`gptproxy.nutef.com`)"
