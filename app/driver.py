@@ -17,6 +17,16 @@ USUARIO = '[data-message-author-role="user"]'
 STOP_BUTTON = '[data-testid="stop-button"]'
 RATE_MODAL = '[data-testid="modal-conversation-history-rate-limit"]'
 CLICK_TIMEOUT_MS = 10000
+# `fill` sem timeout explicito usa os 30s padrao do Playwright. Em 2026-09-10
+# esse foi o erro dominante do servico: 77 `Locator.fill: Timeout 30000ms` em
+# seis horas, distribuidos IGUALMENTE pelas tres contas (29/26/22) e SO sob
+# carga -- ocioso, prompt de 60 mil caracteres passa em 9,4s. Distribuicao
+# igual entre contas independentes significa causa compartilhada, entao trocar
+# de conta (que era tudo o que o servidor fazia) nao resolvia nada: so queimava
+# 30s na proxima aba pelo mesmo motivo.
+FILL_TIMEOUT_MS = int(os.environ.get("FILL_TIMEOUT_MS", "25000"))
+# Quanto esperar a resposta ANTERIOR terminar quando o composer está ocupado.
+BUSY_WAIT_MS = int(os.environ.get("BUSY_WAIT_MS", "120000"))
 # `#modal-no-auth-login` entrou depois de 2026-08-21: naquele dia ele ficou por
 # cima da caixa de texto sem trazer botao com esses data-testid, entao a sessao
 # morta passou por "editor visivel" e o envio so estourou no clique.
@@ -168,6 +178,71 @@ async def erro_de_clique(page, e: Exception) -> Exception:
     return Blocked(f"a caixa de texto não aceitou o clique: {e}")
 
 
+async def diagnosticar_editor(page) -> dict:
+    """Por que a caixa de texto não aceitou o que a gente ia escrever?
+
+    Existe porque `Locator.fill: Timeout` não distingue as duas causas
+    possíveis, e elas pedem tratamentos opostos:
+
+      * a página ainda está GERANDO a resposta anterior — a UI mantém o
+        composer desabilitado, e o certo é esperar, não recarregar;
+      * a aba travou (SPA em estado ruim depois de navegar no meio de uma
+        geração) — aí só recarregar resolve, e esperar é tempo jogado fora.
+
+    Sem este diagnóstico, o serviço só sabia trocar de conta — e trocar de
+    conta não resolve nenhuma das duas.
+    """
+    out = {"gerando": False, "desabilitado": None, "sessao_caiu": False, "erro": None}
+    try:
+        out["gerando"] = await page.locator(STOP_BUTTON).count() > 0
+    except Exception as e:
+        out["erro"] = str(e)[:120]
+    try:
+        out["sessao_caiu"] = await sessao_caiu(page)
+    except Exception:
+        pass
+    try:
+        out["desabilitado"] = await page.locator(EDITOR).first.evaluate(
+            "el => el.getAttribute('contenteditable') === 'false'"
+            " || el.disabled === true"
+            " || el.getAttribute('aria-disabled') === 'true'"
+        )
+    except Exception:
+        pass
+    return out
+
+
+async def recuperar_editor(page, diag: dict) -> None:
+    """Devolve a aba a um estado em que dá para escrever.
+
+    Gerando: espera terminar (a UI destrava sozinha). Travada: recarrega. Em
+    ambos os casos a conversa aberta é preservada — `reload` mantém a mesma
+    URL, então as contagens de mensagens que o `ask_stream` mediu continuam
+    valendo, tanto na conversa nova quanto na continuação.
+    """
+    if diag.get("gerando"):
+        print("[driver] composer ocupado: aguardando a resposta anterior terminar", flush=True)
+        try:
+            # Teto próprio, e não o ANSWER_TIMEOUT (600s): esperar a resposta
+            # ANTERIOR terminar é razoável por um minuto ou dois; dez minutos
+            # seria transformar um composer ocupado em requisição pendurada.
+            await page.locator(STOP_BUTTON).first.wait_for(
+                state="detached", timeout=BUSY_WAIT_MS)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1000)
+        return
+
+    print("[driver] aba travada: recarregando antes de desistir da conta", flush=True)
+    try:
+        await page.reload(wait_until="domcontentloaded", timeout=config.NAV_TIMEOUT * 1000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2000)
+    await dismiss_modals(page)
+    await wait_editor(page)
+
+
 async def wait_editor(page) -> None:
     """Garante a caixa de texta pronta, resolvendo desafio/sessão pelo caminho."""
     editor = page.locator(EDITOR)
@@ -281,7 +356,9 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
 
     editor = page.locator(EDITOR)
 
-    async def _enviar():
+    recuperou = {"ja": False}
+
+    async def _escrever():
         # Timeout curto de proposito: o padrao do Playwright (30s) fazia cada
         # conta queimar meio minuto antes de rodar para a proxima, e o erro
         # saia generico. Se o clique nao vai agora, alguma coisa esta por cima
@@ -292,9 +369,41 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
             raise await erro_de_clique(page, e) from e
         # fill() escreve direto no contenteditable: não passa pelo handler de
         # colar (que transformaria prompt grande em ANEXO) nem dispara submit.
-        await editor.fill(prompt)
+        await editor.fill(prompt, timeout=FILL_TIMEOUT_MS)
         await page.wait_for_timeout(300)
         await page.keyboard.press("Enter")
+
+    async def _enviar():
+        """Escreve e envia, recuperando a aba UMA vez antes de desistir.
+
+        Desistir aqui custa caro em cascata: o servidor passa para a próxima
+        conta (mais 25s), e o cliente ainda tem tentativas próprias — uma
+        chamada podia virar nove interações de página, todas esbarrando no
+        mesmo composer indisponível. Recuperar a aba resolve na primeira.
+        """
+        try:
+            await _escrever()
+            return
+        except (SessionExpired, Blocked):
+            raise
+        except Exception as e:
+            if recuperou["ja"]:
+                raise
+            recuperou["ja"] = True
+            diag = await diagnosticar_editor(page)
+            if diag.get("sessao_caiu"):
+                raise SessionExpired("sessão caiu: a página está oferecendo login") from e
+            print(f"[driver] escrita falhou ({str(e)[:80]}); diagnóstico: {diag}", flush=True)
+            await recuperar_editor(page, diag)
+            try:
+                await _escrever()
+            except Exception as e2:
+                # A mensagem carrega o diagnóstico: da próxima vez que isto
+                # aparecer no log, ele diz QUAL das duas causas foi.
+                raise Blocked(
+                    f"caixa de texto indisponível mesmo após recuperação "
+                    f"(gerando={diag.get('gerando')}, desabilitado={diag.get('desabilitado')}): {e2}"
+                ) from e2
 
     # Ao voltar para uma conversa antiga, a caixa de texto fica visível antes de
     # estar funcional e o Enter cai no vazio — a mensagem nunca entra. Conferir
