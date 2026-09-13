@@ -92,7 +92,7 @@ dica do noVNC). Todo o resto o proxy resolve sem ninguém:
 | navegador inteiro morto | evento `close` do contexto | relança do perfil em disco (`_relancar`) |
 | aba congelada (chamada do Playwright pendurada) | `PASSO_TIMEOUT` (300s sem sinal de vida) / `PRAZO_CONTA` (1000s) em `_com_prazo` | cancela a tentativa → `Travada` → aba nova |
 | lock preso além de `PRAZO_CONTA`+120s | watcher (a cada 30s) | cancela a tarefa dona do lock → aba nova |
-| SPA em estado ruim que o reload não conserta | `FALHAS_PARA_RECRIAR` (3) falhas seguidas | aba nova |
+| SPA em estado ruim que o reload não conserta | `FALHAS_PARA_RECRIAR` (2) falhas seguidas | aba nova |
 | renderer inchando (4,5 GB no OOM de 13/09) | aba ociosa > `OCIOSA_ESTACIONAR` (300s) | `about:blank` |
 | processo que não se cura mais | `/health` → `vivo: false` | healthcheck do swarm troca o container (perfis em disco) |
 

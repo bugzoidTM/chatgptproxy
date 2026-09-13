@@ -44,8 +44,11 @@ PRAZO_CONTA = int(os.environ.get("PRAZO_CONTA", str(ANSWER_TIMEOUT + 400)))
 # memoria, e chat novo/continuacao ja fazem `goto` antes de usar a aba.
 OCIOSA_ESTACIONAR = int(os.environ.get("OCIOSA_ESTACIONAR", "300"))
 # Falhas seguidas (sem sessao cair) que fazem a aba ser recriada mesmo sem
-# crash explicito -- uma SPA em estado ruim que nem o reload consertou.
-FALHAS_PARA_RECRIAR = int(os.environ.get("FALHAS_PARA_RECRIAR", "3"))
+# crash explicito -- uma SPA em estado ruim que nem o reload consertou, ou um
+# renderer lento a ponto de estourar o `goto` (renderer congelado aparece
+# assim, nao como chamada pendurada). Recriar a aba custa ~5s e nao perde
+# nada, entao vale ser agressivo: 2, nao 3.
+FALHAS_PARA_RECRIAR = int(os.environ.get("FALHAS_PARA_RECRIAR", "2"))
 POLL_MS = int(os.environ.get("POLL_MS", "400"))
 
 # Quantas conversas abertas guardar para continuar em vez de recomeçar.

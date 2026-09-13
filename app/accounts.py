@@ -28,6 +28,9 @@ _TIQUE = 30
 # cancelar a tarefa dona dele. E o cinto de seguranca do prazo em server.py:
 # se o prazo funciona, isto nunca dispara.
 _LOCK_MAX = config.PRAZO_CONTA + 120
+# Duas recuperacoes da mesma conta dentro deste intervalo = a aba nova nao
+# resolveu; a segunda vai direto para o relancamento do navegador.
+_REINCIDENCIA = 10 * 60
 
 
 class Account:
@@ -52,6 +55,7 @@ class Account:
         self.falhas_seguidas = 0
         self.recuperacoes = 0
         self.geracao = 0  # sobe a cada aba nova (ver _vigiar)
+        self.ultima_recuperacao = 0.0
 
     @property
     def profile_dir(self) -> str:
@@ -367,17 +371,28 @@ class Pool:
         # Espera a tarefa dona do lock sair (ou ser cancelada pelo watcher).
         async with acct.lock:
             acct.recuperacoes += 1
+            # Escalada: aba nova que falhou de novo em menos de _REINCIDENCIA
+            # nao ganha outra aba -- o Chromium reaproveita o processo do
+            # mesmo site, e a aba nova herda o renderer doente (visto no teste
+            # de 2026-09-13: renderer congelado, aba nova, `fill` estourando
+            # igual). Relancar mata todos os renderers da conta.
+            reincidente = time.time() - acct.ultima_recuperacao < _REINCIDENCIA
+            acct.ultima_recuperacao = time.time()
             ok = False
-            try:
-                ok = await asyncio.wait_for(self._nova_aba(acct), timeout=120)
-            except Exception as e:
-                print(f"[pool] {acct.id}: aba nova falhou ({str(e)[:120]}); "
-                      "relancando o navegador", flush=True)
+            if reincidente:
+                print(f"[pool] {acct.id}: reincidencia em menos de {_REINCIDENCIA}s; "
+                      "relancando o navegador direto", flush=True)
+            else:
+                try:
+                    ok = await asyncio.wait_for(self._nova_aba(acct), timeout=120)
+                except Exception as e:
+                    print(f"[pool] {acct.id}: aba nova falhou ({type(e).__name__}: "
+                          f"{str(e)[:120]}); relancando o navegador", flush=True)
             if not ok:
                 try:
                     ok = await asyncio.wait_for(self._relancar(acct), timeout=240)
                 except Exception as e:
-                    acct.last_error = f"relancamento falhou: {str(e)[:200]}"
+                    acct.last_error = f"relancamento falhou: {type(e).__name__}: {str(e)[:200]}"
                     print(f"[pool] {acct.id}: relancamento falhou: {e}", flush=True)
             if ok:
                 acct.falhas_seguidas = 0
