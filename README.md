@@ -96,12 +96,14 @@ dica do noVNC). Todo o resto o proxy resolve sem ninguém:
 | lock preso além de `PRAZO_CONTA`+120s | watcher (a cada 30s) | cancela a tarefa dona do lock → aba nova |
 | SPA em estado ruim que o reload não conserta | `FALHAS_PARA_RECRIAR` (2) falhas seguidas | aba nova |
 | renderer inchando (4,5 GB no OOM de 13/09) | aba ociosa > `OCIOSA_ESTACIONAR` (300s) | `about:blank` |
+| UI renderizada deslogada com sessão viva ("Entrar" visível) | `mark_no_session` confirma em `/api/auth/session` (3×) | aba nova; **sem** aviso de relogin (era falso alarme) |
+| OpenAI "gerando" sem texto (bolinha azul eterna, conta grátis) | `STALL_TIMEOUT` (180s) sem texto com botão parar visível | recarrega+reenvia 1×; na 2ª, `Stalled` → quarentena de `STALL_COOLDOWN` (600s) |
 | processo que não se cura mais | `/health` → `vivo: false` | healthcheck do swarm troca o container (perfis em disco) |
 
 `vivo` **não** cai por falta de sessão: reiniciar nesse estado só mataria a janela em que
 o dono está logando pelo noVNC. Durante a recuperação a conta fica `recovering` e o
 `acquire` espera em vez de falhar. `admin.sh contas` mostra `busy_for`, `idle_for`,
-`falhas_seguidas` e `recuperacoes`.
+`falhas_seguidas`, `recuperacoes`, `falsos_logout` e `passo` (em que ponto do envio a aba está).
 
 ## Armadilhas já pagas
 

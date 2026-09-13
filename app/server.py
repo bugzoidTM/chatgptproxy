@@ -243,10 +243,17 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                     except driver.RateLimited:
                         pool.mark_rate_limited(acct)
                         print(f"[answer] {acct.id}: limite da OpenAI na continuação", flush=True)
+                    except driver.Stalled as e:
+                        pool.mark_rate_limited(acct, config.STALL_COOLDOWN)
+                        acct.last_error = str(e)[:300]
+                        print(f"[answer] {acct.id}: geracao travada na continuação; "
+                              f"quarentena de {config.STALL_COOLDOWN}s", flush=True)
                     except driver.SessionExpired:
                         await pool.mark_no_session(acct)
-                        cache.drop_account(acct.id)
-                        print(f"[answer] {acct.id}: sessão caiu na continuação", flush=True)
+                        if acct.status == "no-session":
+                            cache.drop_account(acct.id)
+                        print(f"[answer] {acct.id}: sessão caiu na continuação -> {acct.status}",
+                              flush=True)
                     except Exception as e:
                         pool.registrar_falha(acct, e)
                         print(f"[answer] {acct.id}: continuação falhou: {e}", flush=True)
@@ -273,10 +280,18 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
         except driver.RateLimited as e:
             pool.mark_rate_limited(acct)
             erro = e
+        except driver.Stalled as e:
+            pool.mark_rate_limited(acct, config.STALL_COOLDOWN)
+            acct.last_error = str(e)[:300]
+            erro = e
+            print(f"[answer] {acct.id}: geracao travada; quarentena de "
+                  f"{config.STALL_COOLDOWN}s", flush=True)
         except driver.SessionExpired as e:
             await pool.mark_no_session(acct)
-            cache.drop_account(acct.id)
+            if acct.status == "no-session":
+                cache.drop_account(acct.id)
             erro = e
+            print(f"[answer] {acct.id}: {e} -> {acct.status}", flush=True)
         except driver.Blocked as e:
             pool.registrar_falha(acct, e)
             erro = e

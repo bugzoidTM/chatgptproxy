@@ -56,6 +56,7 @@ class Account:
         self.recuperacoes = 0
         self.geracao = 0  # sobe a cada aba nova (ver _vigiar)
         self.ultima_recuperacao = 0.0
+        self.falsos_logout = 0  # UI deslogada com sessao viva (ver mark_no_session)
 
     @property
     def profile_dir(self) -> str:
@@ -87,6 +88,8 @@ class Account:
             "idle_for": int(time.time() - self.ultimo_uso),
             "falhas_seguidas": self.falhas_seguidas,
             "recuperacoes": self.recuperacoes,
+            "falsos_logout": self.falsos_logout,
+            "passo": getattr(self.page, "_cgp_passo", None) if self.busy else None,
         }
 
 
@@ -213,6 +216,8 @@ class Pool:
             return
         acct.page = await self._main_page(acct)
         email = await driver.session_email(acct.page)
+        if not email and not await driver.sessao_confirmada_morta(acct.page):
+            email = await driver.session_email(acct.page)  # a sonda oscilou; nao e queda
         acct.email = email
         if email:
             acct.status = "ready"
@@ -339,10 +344,22 @@ class Pool:
     def mark_rate_limited(self, acct: Account, seconds: int = 600) -> None:
         acct.rate_limited_until = time.time() + seconds
         acct.last_error = f"limite da OpenAI; fora do rodízio por {seconds}s"
+        acct.ultimo_uso = time.time()
 
     async def mark_no_session(self, acct: Account) -> None:
+        """A UI ofereceu login. Antes de tirar a conta do rodizio e acordar o
+        dono, confirma pela API: UI deslogada com sessao viva e aba doente, e
+        aba doente se resolve com aba nova -- nao com relogin."""
+        if not await driver.sessao_confirmada_morta(acct.page):
+            acct.falsos_logout += 1
+            print(f"[pool] {acct.id}: UI deslogada mas /api/auth/session responde "
+                  f"({acct.email}); e a aba, nao a sessao", flush=True)
+            self.agendar_recuperacao(acct, "UI deslogada com sessao viva")
+            return
         acct.status = "no-session"
         acct.last_error = "sessão expirada: precisa de login manual pelo noVNC"
+        print(f"[pool] {acct.id}: sessao expirada confirmada pela API; fora do rodizio",
+              flush=True)
         await notify.alert(
             f"expired:{acct.id}",
             f"A sessão da conta *{acct.id}* expirou no meio do uso e ela saiu do rodízio.",

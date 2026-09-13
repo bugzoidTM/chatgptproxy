@@ -27,6 +27,16 @@ ANSWER_TIMEOUT = int(os.environ.get("ANSWER_TIMEOUT", "600"))
 # para outra conta à toa.
 COMECO_TIMEOUT = int(os.environ.get("COMECO_TIMEOUT", "150"))
 SLOT_WAIT_TIMEOUT = int(os.environ.get("SLOT_WAIT_TIMEOUT", "900"))
+# Botao "parar" visivel e NENHUM texto por este tempo = geracao travada do
+# lado da OpenAI (bolinha azul eterna; visto na conta gratis em 2026-09-13,
+# em ~metade das chamadas). O driver recarrega e reenvia uma vez; na
+# segunda, desiste da conta. Antes ele esperava os 600s do ANSWER_TIMEOUT.
+# Modelo pensando tambem fica sem texto -- 180s cobre o gpt-5 normal; para
+# `thinking` longo, suba por ambiente.
+STALL_TIMEOUT = int(os.environ.get("STALL_TIMEOUT", "180"))
+# Conta que travou duas vezes fica este tempo fora do rodizio (a conta gratis
+# travava em ~metade das chamadas e cada uma custava 10min de espera).
+STALL_COOLDOWN = int(os.environ.get("STALL_COOLDOWN", "600"))
 # Prazos da AUTOCORRECAO (2026-09-13). Nem toda chamada do Playwright tem
 # timeout: `count()`/`evaluate` num renderer congelado penduram para sempre, e
 # foi assim que a conta1 ficou 6h "busy" com o lock preso. Todo uso de conta

@@ -58,6 +58,15 @@ EXTRACT_MARKDOWN = """el => {
 }"""
 
 
+def passo(page, nome: str) -> None:
+    """Anota em que ponto do envio a aba esta (sai em /admin/accounts como
+    `passo`). E o que responde "presa ONDE?" quando `busy_for` cresce."""
+    try:
+        page._cgp_passo = f"{nome} @{int(time.time())}"
+    except Exception:
+        pass
+
+
 class RateLimited(Exception):
     """A própria OpenAI está limitando esta conta."""
 
@@ -68,6 +77,11 @@ class SessionExpired(Exception):
 
 class Blocked(Exception):
     """Cloudflare interpôs desafio e o clique automático não passou."""
+
+
+class Stalled(Exception):
+    """A OpenAI ficou "gerando" sem mandar texto, duas vezes. A conta entra em
+    quarentena (como no limite de taxa) e a proxima responde em segundos."""
 
 
 class Travada(Exception):
@@ -103,8 +117,12 @@ async def session_email(page) -> str | None:
     Lido de /api/auth/session, que é a única fonte confiável de identidade —
     a presença de cookie não prova de qual conta é a sessão.
     """
+    # `page.context.request`, nao `page.request`: mesmos cookies, mas funciona
+    # com a aba morta/travada -- e e exatamente nessa hora que a pergunta
+    # "a sessao caiu ou a aba que esta doente?" precisa de resposta.
     try:
-        resp = await page.request.get(f"{config.BASE_URL}/api/auth/session", timeout=20000)
+        resp = await page.context.request.get(
+            f"{config.BASE_URL}/api/auth/session", timeout=20000)
         if resp.status != 200:
             return None
         data = await resp.json()
@@ -112,6 +130,22 @@ async def session_email(page) -> str | None:
         return None
     user = (data or {}).get("user") or {}
     return user.get("email")
+
+
+async def sessao_confirmada_morta(page, tentativas: int = 3) -> bool:
+    """A sessao caiu DE VERDADE? Pergunta a /api/auth/session ate 3 vezes.
+
+    A UI do chatgpt.com as vezes renderiza deslogada ("Entrar", "Cadastre-se")
+    com a sessao viva -- aconteceu com a conta2 em 2026-09-13: o proxy a tirou
+    do rodizio e mandou o dono relogar, e o `refresh` seguinte achou o e-mail
+    normalmente. So a API e autoridade; o botao de login e sintoma.
+    """
+    for i in range(tentativas):
+        if await session_email(page):
+            return False
+        if i < tentativas - 1:
+            await asyncio.sleep(3)
+    return True
 
 
 async def dismiss_modals(page) -> None:
@@ -366,7 +400,9 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     trecho na resposta final.
     """
     timeout = timeout or config.ANSWER_TIMEOUT
+    passo(page, "modais")
     await dismiss_modals(page)
+    passo(page, "editor")
     await wait_editor(page)
 
     answers = page.locator(ASSISTANT)
@@ -390,14 +426,17 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
         # conta queimar meio minuto antes de rodar para a proxima, e o erro
         # saia generico. Se o clique nao vai agora, alguma coisa esta por cima
         # -- e quem diz o que e o diagnostico abaixo, nao a espera.
+        passo(page, "clique")
         try:
             await editor.click(timeout=CLICK_TIMEOUT_MS)
         except Exception as e:
             raise await erro_de_clique(page, e) from e
         # fill() escreve direto no contenteditable: não passa pelo handler de
         # colar (que transformaria prompt grande em ANEXO) nem dispara submit.
+        passo(page, "fill")
         await editor.fill(prompt, timeout=FILL_TIMEOUT_MS)
         await page.wait_for_timeout(300)
+        passo(page, "enter")
         await page.keyboard.press("Enter")
 
     async def _enviar():
@@ -436,6 +475,7 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     # estar funcional e o Enter cai no vazio — a mensagem nunca entra. Conferir
     # que a pergunta apareceu na conversa é a única prova de que foi enviada.
     await _enviar()
+    passo(page, "pergunta-entrou?")
     for tentativa in (1, 2):
         try:
             await perguntas.nth(perguntas_antes).wait_for(state="attached", timeout=15000)
@@ -457,11 +497,13 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     # Enviar logo depois do turno anterior às vezes cai no vazio: a pergunta
     # aparece na conversa (render otimista) e resposta nenhuma vem. Em vez de
     # esperar 150s por algo que não virá, recarrega e reenvia UMA vez.
+    passo(page, "comecou?")
     espera = time.time() + 30
     while time.time() < espera and not await _comecou():
         await page.wait_for_timeout(500)
 
-    if not await _comecou():
+    async def _recarregar_e_reenviar():
+        passo(page, "recarrega+reenvia")
         try:
             await page.reload(wait_until="domcontentloaded",
                               timeout=config.NAV_TIMEOUT * 1000)
@@ -477,6 +519,9 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
             except Exception:
                 pass
 
+    if not await _comecou():
+        await _recarregar_e_reenviar()
+
     enviado = ""     # o que já saiu para o cliente
     anterior = ""    # leitura do poll anterior
     deadline = time.time() + timeout
@@ -487,12 +532,37 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     # Um delta VAZIO de tempos em tempos e o sinal de vida (os consumidores
     # descartam delta vazio; o prazo por passo em server.py conta com ele).
     batimento = time.time() + 10
+    # Geracao travada do lado da OpenAI: botao "parar" visivel, texto nenhum,
+    # por STALL_TIMEOUT. Nao e a aba (a foto mostra a bolinha azul e a pagina
+    # responde): e o servidor que nao manda nada. Uma recarga+reenvio; na
+    # segunda vez desiste -- outra conta responde em segundos.
+    sem_texto_desde = time.time()
+    travou = 0
+    passo(page, "resposta")
     while time.time() < deadline:
         if time.time() >= batimento:
             batimento = time.time() + 10
             yield ""
         streaming = await stop.count() > 0
         texto = await _texto_da_nova(page, id_antes, texto_antes)
+
+        if texto:
+            sem_texto_desde = None
+        elif sem_texto_desde is not None and streaming \
+                and time.time() - sem_texto_desde > config.STALL_TIMEOUT:
+            travou += 1
+            print(f"[driver] gerando ha {config.STALL_TIMEOUT}s sem texto nenhum "
+                  f"(travou={travou}); {'recarregando e reenviando' if travou == 1 else 'desistindo'}",
+                  flush=True)
+            if travou >= 2:
+                raise Stalled(
+                    f"o ChatGPT ficou gerando sem produzir texto por {config.STALL_TIMEOUT}s "
+                    "duas vezes seguidas (geracao travada do lado da OpenAI)")
+            await _recarregar_e_reenviar()
+            sem_texto_desde = time.time()
+            anterior = ""
+            passo(page, "resposta")
+            continue
 
         estavel = _prefixo_comum(texto, anterior)
         if len(estavel) > len(enviado) and estavel.startswith(enviado):
