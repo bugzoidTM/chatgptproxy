@@ -20,6 +20,7 @@ digitar e o ChatGPT responder. Cliente precisa de **timeout largo**.
 | `POST /admin/refresh/{conta}` | reconfere a sessão e diz **qual e-mail** entrou |
 | `POST /admin/reset/{conta}` | devolve a conta a um chat novo |
 | `POST /admin/recover/{conta}` | recria a aba (mesmo perfil, sem relogin) — o que o proxy faz sozinho em crash |
+| `GET /admin/stack/{conta}` | cadeia de `await` da tarefa que segura a conta — diz QUAL chamada do Playwright pendurou |
 | `GET /admin/screenshot/{conta}` | print da aba (para depurar sem noVNC) |
 
 Autenticação: `Authorization: Bearer <API_KEY>` em tudo, menos `/health`.
@@ -76,6 +77,7 @@ detecta e-mail repetido.
 ./admin.sh teste           # pergunta de verdade, ponta a ponta
 ./admin.sh foto conta2     # print da aba
 ./admin.sh recupera conta2 # recria a aba da conta (sem relogin)
+./admin.sh pilha conta1    # onde a tarefa que segura a conta está parada
 docker service logs -f chatgptproxy_chatgptproxy
 ```
 

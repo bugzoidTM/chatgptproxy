@@ -521,6 +521,42 @@ async def admin_screenshot(acct_id: str, authorization: str | None = Header(None
     return Response(content=png, media_type="image/png")
 
 
+@app.get("/admin/stack/{acct_id}")
+async def admin_stack(acct_id: str, authorization: str | None = Header(None)):
+    """Pilha da tarefa que segura a conta. E o que diz QUAL chamada do
+    Playwright pendurou -- sem isto, "ficou 300s sem sinal de vida" nao aponta
+    para lugar nenhum."""
+    _require_key(authorization)
+    acct = pool.get(acct_id)
+    if not acct:
+        raise HTTPException(404, f"conta desconhecida: {acct_id}")
+    if acct.task is None or acct.task.done():
+        return {"busy": acct.busy, "stack": None}
+    # `Task.get_stack()` so mostra o quadro de cima; o `await` pendurado esta
+    # no fundo da cadeia cr_await/ag_await, e e ele que interessa.
+    frames = []
+    obj = acct.task.get_coro()
+    visto = 0
+    while obj is not None and visto < 60:
+        visto += 1
+        fr = getattr(obj, "cr_frame", None) or getattr(obj, "ag_frame", None) \
+            or getattr(obj, "gi_frame", None)
+        if fr is not None:
+            frames.append(f"{fr.f_code.co_filename.split('/')[-1]}:{fr.f_lineno} {fr.f_code.co_name}")
+        obj = getattr(obj, "cr_await", None) or getattr(obj, "ag_await", None) \
+            or getattr(obj, "gi_yieldfrom", None)
+        if obj is not None and not hasattr(obj, "cr_frame") and not hasattr(obj, "ag_frame") \
+                and not hasattr(obj, "gi_frame"):
+            frames.append(f"<{type(obj).__name__}>")
+            # Future/Task: segue a cadeia se for Task
+            obj = obj.get_coro() if hasattr(obj, "get_coro") else None
+    return {
+        "busy": acct.busy,
+        "busy_for": int(time.time() - acct.busy_since) if acct.busy_since else 0,
+        "frames": frames,
+    }
+
+
 @app.post("/admin/recover/{acct_id}")
 async def admin_recover(acct_id: str, authorization: str | None = Header(None)):
     """Recria a aba da conta (mesmo perfil, sem relogin) e espera o resultado.
