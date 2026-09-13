@@ -80,8 +80,9 @@ class Blocked(Exception):
 
 
 class Stalled(Exception):
-    """A OpenAI ficou "gerando" sem mandar texto, duas vezes. A conta entra em
-    quarentena (como no limite de taxa) e a proxima responde em segundos."""
+    """A OpenAI ficou "gerando" sem mandar texto por STALL_TIMEOUT. A conta
+    entra em quarentena (como no limite de taxa) e a proxima responde em
+    segundos."""
 
 
 class Travada(Exception):
@@ -534,10 +535,9 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     batimento = time.time() + 10
     # Geracao travada do lado da OpenAI: botao "parar" visivel, texto nenhum,
     # por STALL_TIMEOUT. Nao e a aba (a foto mostra a bolinha azul e a pagina
-    # responde): e o servidor que nao manda nada. Uma recarga+reenvio; na
-    # segunda vez desiste -- outra conta responde em segundos.
+    # responde): e o servidor que nao manda nada. Desiste -- outra conta
+    # responde em segundos.
     sem_texto_desde = time.time()
-    travou = 0
     passo(page, "resposta")
     while time.time() < deadline:
         if time.time() >= batimento:
@@ -550,19 +550,27 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
             sem_texto_desde = None
         elif sem_texto_desde is not None and streaming \
                 and time.time() - sem_texto_desde > config.STALL_TIMEOUT:
-            travou += 1
-            print(f"[driver] gerando ha {config.STALL_TIMEOUT}s sem texto nenhum "
-                  f"(travou={travou}); {'recarregando e reenviando' if travou == 1 else 'desistindo'}",
-                  flush=True)
-            if travou >= 2:
-                raise Stalled(
-                    f"o ChatGPT ficou gerando sem produzir texto por {config.STALL_TIMEOUT}s "
-                    "duas vezes seguidas (geracao travada do lado da OpenAI)")
-            await _recarregar_e_reenviar()
-            sem_texto_desde = time.time()
-            anterior = ""
-            passo(page, "resposta")
-            continue
+            # Recarrega para ver se a resposta chegou do lado do servidor;
+            # se nao chegou, NAO reenvia (a conta que travou uma vez trava
+            # de novo -- medido: 2 x 180s para o mesmo resultado). Desiste e
+            # deixa o servidor por a conta em quarentena.
+            print(f"[driver] gerando ha {config.STALL_TIMEOUT}s sem texto nenhum; "
+                  "recarregando para conferir", flush=True)
+            passo(page, "stall:recarrega")
+            try:
+                await page.reload(wait_until="domcontentloaded",
+                                  timeout=config.NAV_TIMEOUT * 1000)
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+            if await _texto_da_nova(page, id_antes, texto_antes):
+                sem_texto_desde = None
+                anterior = ""
+                passo(page, "resposta")
+                continue
+            raise Stalled(
+                f"o ChatGPT ficou gerando sem produzir texto por {config.STALL_TIMEOUT}s "
+                "(geracao travada do lado da OpenAI)")
 
         estavel = _prefixo_comum(texto, anterior)
         if len(estavel) > len(enviado) and estavel.startswith(enviado):
