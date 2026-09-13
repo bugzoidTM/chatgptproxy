@@ -27,6 +27,25 @@ ANSWER_TIMEOUT = int(os.environ.get("ANSWER_TIMEOUT", "600"))
 # para outra conta à toa.
 COMECO_TIMEOUT = int(os.environ.get("COMECO_TIMEOUT", "150"))
 SLOT_WAIT_TIMEOUT = int(os.environ.get("SLOT_WAIT_TIMEOUT", "900"))
+# Prazos da AUTOCORRECAO (2026-09-13). Nem toda chamada do Playwright tem
+# timeout: `count()`/`evaluate` num renderer congelado penduram para sempre, e
+# foi assim que a conta1 ficou 6h "busy" com o lock preso. Todo uso de conta
+# roda sob dois relogios:
+#  - PASSO_TIMEOUT: maximo sem NENHUM sinal de vida do driver (ele emite
+#    batimentos durante a espera da resposta), acima da maior chamada
+#    bloqueante legitima (espera do composer ocupado 120s + reload 60s + editor 30s);
+#  - PRAZO_CONTA: teto absoluto de uma tentativa numa conta.
+# Estourou qualquer um: a tentativa e cancelada e a aba e RECRIADA.
+PASSO_TIMEOUT = int(os.environ.get("PASSO_TIMEOUT", "300"))
+PRAZO_CONTA = int(os.environ.get("PRAZO_CONTA", str(ANSWER_TIMEOUT + 400)))
+# Aba ociosa por mais que isto vai para about:blank. Um renderer com pagina de
+# conversa aberta cresce sem parar (o OOM de 2026-09-13 matou um chrome com
+# 4,5 GB de RSS e derrubou a conta3 do rodizio); a pagina em branco devolve a
+# memoria, e chat novo/continuacao ja fazem `goto` antes de usar a aba.
+OCIOSA_ESTACIONAR = int(os.environ.get("OCIOSA_ESTACIONAR", "300"))
+# Falhas seguidas (sem sessao cair) que fazem a aba ser recriada mesmo sem
+# crash explicito -- uma SPA em estado ruim que nem o reload consertou.
+FALHAS_PARA_RECRIAR = int(os.environ.get("FALHAS_PARA_RECRIAR", "3"))
 POLL_MS = int(os.environ.get("POLL_MS", "400"))
 
 # Quantas conversas abertas guardar para continuar em vez de recomeçar.

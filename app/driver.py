@@ -70,6 +70,33 @@ class Blocked(Exception):
     """Cloudflare interpôs desafio e o clique automático não passou."""
 
 
+class Travada(Exception):
+    """A aba parou de dar sinal de vida (chamada do Playwright pendurada ou
+    prazo absoluto estourado). Só recriar a aba resolve; relogin NÃO ajuda."""
+
+
+# Trechos de mensagem que provam que a aba/navegador morreu e nenhuma nova
+# tentativa NA MESMA PÁGINA vai funcionar. Em 2026-09-13 o renderer da conta3
+# foi morto pelo OOM e todo `goto` devolvia "Page crashed" na hora -- 289 vezes,
+# com a conta ainda "ready" no rodízio.
+_MORTA = (
+    "Page crashed",
+    "Target crashed",
+    "crashed",
+    "Target closed",
+    "Target page, context or browser has been closed",
+    "has been closed",
+    "Browser has been closed",
+    "Connection closed",
+    "Protocol error",
+)
+
+
+def pagina_morta(e: BaseException) -> bool:
+    msg = str(e)
+    return any(t in msg for t in _MORTA)
+
+
 async def session_email(page) -> str | None:
     """E-mail da conta logada, ou None se a sessão caiu.
 
@@ -455,7 +482,15 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     deadline = time.time() + timeout
     comeco_limite = time.time() + config.COMECO_TIMEOUT
     parado = 0
+    # Batimento: modelo pensando pode ficar minutos sem texto nenhum, e quem
+    # consome este gerador precisa distinguir "pensando" de "aba congelada".
+    # Um delta VAZIO de tempos em tempos e o sinal de vida (os consumidores
+    # descartam delta vazio; o prazo por passo em server.py conta com ele).
+    batimento = time.time() + 10
     while time.time() < deadline:
+        if time.time() >= batimento:
+            batimento = time.time() + 10
+            yield ""
         streaming = await stop.count() > 0
         texto = await _texto_da_nova(page, id_antes, texto_antes)
 

@@ -45,6 +45,19 @@ services:
     # um túnel só no loopback.
     networks:
       - Nutef
+    # Ultimo degrau da autocorrecao (2026-09-13). O processo se cura sozinho de
+    # aba morta/pendurada (app/accounts.py); se nem isso funcionar, `vivo`
+    # cai e o swarm troca o container -- os perfis estao em disco, o login
+    # sobrevive. `vivo` NAO cai por falta de sessao: reiniciar nesse caso so
+    # mataria a janela em que o dono esta logando pelo noVNC.
+    # start_period largo: subir tres Chromium + login check leva um par de
+    # minutos, e reinicio falso no boot e pior do que esperar.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=10)); sys.exit(0 if d.get('vivo') else 1)"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 600s
     deploy:
       replicas: 1
       restart_policy:

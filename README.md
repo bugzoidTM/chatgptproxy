@@ -19,6 +19,7 @@ digitar e o ChatGPT responder. Cliente precisa de **timeout largo**.
 | `POST /admin/login/{conta}` | abre a tela de login e levanta a janela no noVNC |
 | `POST /admin/refresh/{conta}` | reconfere a sessão e diz **qual e-mail** entrou |
 | `POST /admin/reset/{conta}` | devolve a conta a um chat novo |
+| `POST /admin/recover/{conta}` | recria a aba (mesmo perfil, sem relogin) — o que o proxy faz sozinho em crash |
 | `GET /admin/screenshot/{conta}` | print da aba (para depurar sem noVNC) |
 
 Autenticação: `Authorization: Bearer <API_KEY>` em tudo, menos `/health`.
@@ -74,10 +75,31 @@ detecta e-mail repetido.
 ./admin.sh contas          # situação das três
 ./admin.sh teste           # pergunta de verdade, ponta a ponta
 ./admin.sh foto conta2     # print da aba
+./admin.sh recupera conta2 # recria a aba da conta (sem relogin)
 docker service logs -f chatgptproxy_chatgptproxy
 ```
 
-Deploy: `set -a; . ./.env; set +a; docker stack deploy -c docker-compose.yml chatgptproxy`
+Deploy: **sempre `./deploy.sh`** (tag única por build; `stack deploy` direto reverte ou vira no-op).
+
+### Autocorreção (2026-09-13) — o que se cura sozinho e o que não
+
+Relogin manual é **só** para sessão expirada de verdade (aviso no Telegram com a
+dica do noVNC). Todo o resto o proxy resolve sem ninguém:
+
+| Sintoma | Detecção | Cura |
+|---|---|---|
+| renderer morto (OOM, `Page crashed`) | evento `crash` da aba | aba nova no mesmo contexto (`_nova_aba`) |
+| navegador inteiro morto | evento `close` do contexto | relança do perfil em disco (`_relancar`) |
+| aba congelada (chamada do Playwright pendurada) | `PASSO_TIMEOUT` (300s sem sinal de vida) / `PRAZO_CONTA` (1000s) em `_com_prazo` | cancela a tentativa → `Travada` → aba nova |
+| lock preso além de `PRAZO_CONTA`+120s | watcher (a cada 30s) | cancela a tarefa dona do lock → aba nova |
+| SPA em estado ruim que o reload não conserta | `FALHAS_PARA_RECRIAR` (3) falhas seguidas | aba nova |
+| renderer inchando (4,5 GB no OOM de 13/09) | aba ociosa > `OCIOSA_ESTACIONAR` (300s) | `about:blank` |
+| processo que não se cura mais | `/health` → `vivo: false` | healthcheck do swarm troca o container (perfis em disco) |
+
+`vivo` **não** cai por falta de sessão: reiniciar nesse estado só mataria a janela em que
+o dono está logando pelo noVNC. Durante a recuperação a conta fica `recovering` e o
+`acquire` espera em vez de falhar. `admin.sh contas` mostra `busy_for`, `idle_for`,
+`falhas_seguidas` e `recuperacoes`.
 
 ## Armadilhas já pagas
 

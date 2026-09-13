@@ -49,6 +49,13 @@ async def health():
     ready = pool.ready_accounts()
     return {
         "ok": bool(ready),
+        # `vivo` e o que o HEALTHCHECK do container le. NAO e "tem conta
+        # logada": as tres sem sessao e um caso de login manual, e reiniciar o
+        # container nesse estado so mataria a janela em que o dono esta
+        # logando. `vivo` cai quando o PROCESSO nao se cura mais sozinho: pool
+        # que nao subiu, lock preso alem do que o watcher deveria destravar, ou
+        # todas as contas em "error" (recuperacao e relancamento falharam).
+        "vivo": pool.vivo(),
         "accounts": [
             {k: v for k, v in a.info().items() if k not in _HEALTH_PRIVADO}
             for a in pool.accounts
@@ -142,9 +149,62 @@ async def _acquire_specific(acct, timeout: int):
         if time.time() >= deadline:
             raise TimeoutError(f"a conta {acct.id} não liberou a tempo")
         await asyncio.sleep(0.5)
-    await acct.lock.acquire()
-    acct.requests += 1
+    await pool.take(acct)
     return acct
+
+
+async def _com_prazo(agen, acct):
+    """Consome o gerador de uma tentativa sob dois relógios (config.PASSO_TIMEOUT
+    e config.PRAZO_CONTA) e transforma silêncio em `driver.Travada`.
+
+    Existe porque nem toda chamada do Playwright tem timeout: `count()` e
+    `evaluate` num renderer congelado penduram para sempre — em 2026-09-13 a
+    conta1 ficou 6h "busy" assim, com o lock preso e fora do rodízio. O
+    cancelamento entra no `await` pendurado, o gerador morre, e os `finally`
+    do chamador devolvem a conta. O driver emite deltas VAZIOS como batimento
+    enquanto o modelo pensa; eles contam como sinal de vida e não saem daqui.
+    """
+    inicio = time.time()
+    try:
+        while True:
+            restante = config.PRAZO_CONTA - (time.time() - inicio)
+            if restante <= 0:
+                raise driver.Travada(
+                    f"{acct.id} estourou o prazo absoluto de {config.PRAZO_CONTA}s")
+            passo = min(config.PASSO_TIMEOUT, restante)
+            try:
+                delta = await asyncio.wait_for(agen.__anext__(), timeout=passo)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                if time.time() - inicio >= config.PRAZO_CONTA:
+                    raise driver.Travada(
+                        f"{acct.id} estourou o prazo absoluto de {config.PRAZO_CONTA}s")
+                raise driver.Travada(
+                    f"{acct.id} ficou {int(passo)}s sem sinal de vida "
+                    f"(chamada do navegador pendurada); aba será recriada")
+            if delta:
+                yield delta
+    finally:
+        try:
+            await asyncio.wait_for(agen.aclose(), timeout=5)
+        except BaseException:
+            pass
+
+
+async def _tentativa(acct, prompt: str, buf: driver.Resposta, url: str | None = None,
+                     slug: str | None = None):
+    """Uma tentativa numa conta: posiciona a aba (conversa antiga ou chat
+    novo) e responde. Fica num gerador só para caber inteira no prazo."""
+    if url is not None:
+        if acct.page.url != url:
+            await acct.page.goto(url, wait_until="domcontentloaded",
+                                 timeout=config.NAV_TIMEOUT * 1000)
+            await acct.page.wait_for_timeout(1500)
+    else:
+        await driver.open_new_chat(acct.page, slug)
+    async for delta in driver.ask_stream(acct.page, prompt, buf=buf):
+        yield delta
 
 
 async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta | None = None):
@@ -169,16 +229,10 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                     acct = None
                 if acct:
                     try:
-                        if acct.page.url != entry["url"]:
-                            await acct.page.goto(
-                                entry["url"], wait_until="domcontentloaded",
-                                timeout=config.NAV_TIMEOUT * 1000,
-                            )
-                            await acct.page.wait_for_timeout(1500)
                         buf.conta = f"{acct.id}/continua"
-                        async for delta in driver.ask_stream(
-                            acct.page, content_text(last.get("content")), buf=buf
-                        ):
+                        tentativa = _tentativa(
+                            acct, content_text(last.get("content")), buf, url=entry["url"])
+                        async for delta in _com_prazo(tentativa, acct):
                             yield delta
                         pool.mark_ok(acct)
                         cache.put(
@@ -194,7 +248,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
                         cache.drop_account(acct.id)
                         print(f"[answer] {acct.id}: sessão caiu na continuação", flush=True)
                     except Exception as e:
-                        acct.last_error = str(e)[:300]
+                        pool.registrar_falha(acct, e)
                         print(f"[answer] {acct.id}: continuação falhou: {e}", flush=True)
                     finally:
                         pool.release(acct)
@@ -208,8 +262,7 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
         acct = await pool.acquire()
         try:
             buf.conta = f"{acct.id}/novo"
-            await driver.open_new_chat(acct.page, slug)
-            async for delta in driver.ask_stream(acct.page, prompt, buf=buf):
+            async for delta in _com_prazo(_tentativa(acct, prompt, buf, slug=slug), acct):
                 yield delta
             pool.mark_ok(acct)
             cache.put(
@@ -225,11 +278,14 @@ async def _answer(messages: list[dict], model: str | None, buf: driver.Resposta 
             cache.drop_account(acct.id)
             erro = e
         except driver.Blocked as e:
-            acct.last_error = str(e)[:300]
+            pool.registrar_falha(acct, e)
             erro = e
             print(f"[answer] {acct.id}: bloqueado: {e}", flush=True)
         except Exception as e:
-            acct.last_error = str(e)[:300]
+            # Inclui `Travada` e pagina morta: `registrar_falha` decide se a
+            # aba e recriada -- a proxima conta e tentada em seguida, mas a
+            # que falhou nao fica apodrecendo no rodizio.
+            pool.registrar_falha(acct, e)
             erro = e
             print(f"[answer] {acct.id}: chat novo falhou: {e}", flush=True)
         finally:
@@ -334,6 +390,8 @@ async def chat_completions(body: dict = Body(...), authorization: str | None = H
                     yield chunk({})
                     continue
                 if tipo == "delta":
+                    if not valor:
+                        continue  # batimento do driver, nao e texto
                     yield chunk({"content": valor})
                 elif tipo == "fim":
                     yield chunk({}, finish="stop")
@@ -376,6 +434,8 @@ def _http_error(e: Exception) -> HTTPException:
         return HTTPException(503, f"{e} — relogin: {config.NOVNC_HINT}")
     if isinstance(e, TimeoutError):
         return HTTPException(504, str(e))
+    if isinstance(e, driver.Travada):
+        return HTTPException(503, str(e))
     return HTTPException(502, str(e))
 
 
@@ -459,6 +519,21 @@ async def admin_screenshot(acct_id: str, authorization: str | None = Header(None
         raise HTTPException(404, f"conta desconhecida: {acct_id}")
     png = await acct.page.screenshot(full_page=False)
     return Response(content=png, media_type="image/png")
+
+
+@app.post("/admin/recover/{acct_id}")
+async def admin_recover(acct_id: str, authorization: str | None = Header(None)):
+    """Recria a aba da conta (mesmo perfil, sem relogin) e espera o resultado.
+    E o mesmo caminho que o proxy usa sozinho em crash/aba pendurada."""
+    _require_key(authorization)
+    acct = pool.get(acct_id)
+    if not acct:
+        raise HTTPException(404, f"conta desconhecida: {acct_id}")
+    pool.agendar_recuperacao(acct, "pedido pelo admin")
+    prazo = time.time() + 400
+    while acct.status == "recovering" and time.time() < prazo:
+        await asyncio.sleep(1)
+    return acct.info()
 
 
 @app.post("/admin/reset/{acct_id}")

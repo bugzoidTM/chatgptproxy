@@ -4,6 +4,7 @@
 #   ./admin.sh login conta1        — abre a tela de login e levanta a janela
 #   ./admin.sh refresh conta1      — reconfere a sessão e diz qual e-mail entrou
 #   ./admin.sh reset conta1        — volta a conta para um chat novo
+#   ./admin.sh recupera conta1     — recria a aba (o que o proxy faz sozinho em crash)
 #   ./admin.sh foto conta1         — salva /tmp/conta1.png
 #   ./admin.sh teste               — pergunta de verdade, ponta a ponta
 set -e
@@ -27,11 +28,12 @@ case "$1" in
   login)   curl -s -X POST -H "$H" "$API/admin/login/$2" | python3 -m json.tool ;;
   refresh) curl -s -X POST -H "$H" "$API/admin/refresh/$2" | python3 -m json.tool ;;
   reset)   curl -s -X POST -H "$H" "$API/admin/reset/$2" | python3 -m json.tool ;;
+  recupera) curl -s --max-time 420 -X POST -H "$H" "$API/admin/recover/$2" | python3 -m json.tool ;;
   foto)    curl -s -H "$H" "$API/admin/screenshot/$2" -o "/tmp/$2.png" && echo "/tmp/$2.png" ;;
   teste)
     curl -s --max-time 900 -X POST "$API/v1/chat/completions" \
       -H "$H" -H "Content-Type: application/json" \
       -d '{"model":"gpt-5","messages":[{"role":"user","content":"Responda apenas: funcionou"}]}' \
       | python3 -m json.tool ;;
-  *) sed -n '2,9p' "$0" ;;
+  *) sed -n '2,10p' "$0" ;;
 esac
