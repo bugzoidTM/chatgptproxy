@@ -124,6 +124,13 @@ o dono está logando pelo noVNC. Durante a recuperação a conta fica `recoverin
 - **O chatgpt.com guarda RASCUNHO do composer.** Depois de `goto`/`reload` a
   caixa pode voltar com o texto da tentativa anterior; toda escrita tem que
   SUBSTITUIR o conteúdo, nunca acrescentar.
+- **Nunca abra um segundo navegador com CÓPIA do perfil de uma conta viva.**
+  Em 25/09/2026 uma sonda numa cópia do perfil da conta3 funcionou normalmente
+  — e a janela ORIGINAL passou a renderizar deslogada com `/api/auth/session`
+  ainda respondendo (o "falso logout", que o proxy trata recriando a aba, em
+  loop, sem avisar). Faltava o cookie `oai-client-session-epoch` na original.
+  Consertou sem relogin: `docker service scale chatgptproxy_chatgptproxy=0`,
+  copiar o `Default/Cookies` da cópia para `profiles/conta3/Default/`, `=1`.
 - **O `422` a cada 10 min no log é a sonda do Radar** (POST sem corpo, que o
   monitor dele aceita como "no ar"). Não é falha — ao medir a taxa de sucesso,
   conte só `200` × `502`/`503`/`504`.
