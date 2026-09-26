@@ -25,6 +25,34 @@ CLICK_TIMEOUT_MS = 10000
 # de conta (que era tudo o que o servidor fazia) nao resolvia nada: so queimava
 # 30s na proxima aba pelo mesmo motivo.
 FILL_TIMEOUT_MS = int(os.environ.get("FILL_TIMEOUT_MS", "25000"))
+# O prompt entra ESCRITO DIRETO NO DOM do ProseMirror (um <p> por linha) e o
+# editor adota a mudanca; `fill` ficou so de reserva. Medido em 2026-09-25 no
+# composer daquele dia: `fill` custa por QUEBRA DE LINHA, e cada linha custa
+# mais que a anterior (comando de edicao do Chrome sobre um documento que so
+# cresce) -- 60 mil caracteres em 539 linhas levavam 38s; texto de PDF, com
+# milhares de linhas curtas (o que o Radar de Licitacoes manda), passa de
+# minutos. Nenhum FILL_TIMEOUT razoavel cobre isso, e recarregar ou trocar de
+# conta nao ajuda: a lentidao e a mesma em toda aba. Foi 50% de 502 por dias
+# ("caixa de texto indisponivel mesmo apos recuperacao", gerando=False,
+# desabilitado=False nas tres contas). Escrita direta: 0,6s para 5 mil linhas.
+ESCREVER_JS = r"""(el, t) => {
+    const frag = document.createDocumentFragment();
+    for (const linha of t.split("\n")) {
+        const p = document.createElement("p");
+        if (linha) p.textContent = linha;
+        else p.appendChild(document.createElement("br"));
+        frag.appendChild(p);
+    }
+    el.replaceChildren(frag);
+}"""
+# O que o EDITOR tem, e nao so o que a gente pos no DOM: o ProseMirror marca
+# com `pmViewDesc` todo no que ele gerencia. <p> escrito por nos e ainda nao
+# adotado nao tem a marca; se ele parsear diferente, redesenha a partir do
+# estado e o texto relido muda. As duas coisas juntas provam a adocao.
+LER_JS = r"""el => ({
+    texto: Array.from(el.children).map(p => p.textContent).join("\n"),
+    adotado: Array.from(el.children).every(c => !!c.pmViewDesc),
+})"""
 # Quanto esperar a resposta ANTERIOR terminar quando o composer está ocupado.
 BUSY_WAIT_MS = int(os.environ.get("BUSY_WAIT_MS", "120000"))
 # `#modal-no-auth-login` entrou depois de 2026-08-21: naquele dia ele ficou por
@@ -336,6 +364,31 @@ async def wait_editor(page) -> None:
         raise Blocked("a caixa de texto do ChatGPT não apareceu")
 
 
+async def escrever_prompt(page, editor, prompt: str) -> str:
+    """Poe `prompt` na caixa de texto; devolve o metodo que funcionou.
+
+    Direto no DOM (ver ESCREVER_JS) e conferido; se o editor nao adotar o
+    texto do jeito que foi escrito, cai para o `fill` antigo -- lento para
+    texto de muitas linhas, mas nunca pior do que era.
+    """
+    texto = prompt.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        await editor.evaluate(ESCREVER_JS, texto)
+        lido = {}
+        for _ in range(10):  # o MutationObserver do ProseMirror e assincrono
+            await page.wait_for_timeout(150)
+            lido = await editor.evaluate(LER_JS)
+            if lido.get("adotado") and lido.get("texto") == texto:
+                return "dom"
+        print(f"[driver] escrita direta nao conferiu (adotado={lido.get('adotado')}, "
+              f"{len(lido.get('texto') or '')} de {len(texto)} chars); caindo para fill",
+              flush=True)
+    except Exception as e:
+        print(f"[driver] escrita direta falhou ({str(e)[:80]}); caindo para fill", flush=True)
+    await editor.fill(texto, timeout=FILL_TIMEOUT_MS)
+    return "fill"
+
+
 async def _ultima_resposta(page):
     """(locator da última resposta, id dela). (None, None) se não há nenhuma.
 
@@ -432,10 +485,11 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
             await editor.click(timeout=CLICK_TIMEOUT_MS)
         except Exception as e:
             raise await erro_de_clique(page, e) from e
-        # fill() escreve direto no contenteditable: não passa pelo handler de
-        # colar (que transformaria prompt grande em ANEXO) nem dispara submit.
-        passo(page, "fill")
-        await editor.fill(prompt, timeout=FILL_TIMEOUT_MS)
+        # Escrita direta no contenteditable (ou fill, na reserva): não passa
+        # pelo handler de colar (que transformaria prompt grande em ANEXO) nem
+        # dispara submit.
+        passo(page, "escrever")
+        await escrever_prompt(page, editor, prompt)
         await page.wait_for_timeout(300)
         passo(page, "enter")
         await page.keyboard.press("Enter")

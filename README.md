@@ -112,8 +112,21 @@ o dono está logando pelo noVNC. Durante a recuperação a conta fica `recoverin
 - **Não sobrescreva o `user_agent`.** O override não mexe nos Client Hints
   (`sec-ch-ua` mantém a versão real) e o Cloudflare reprova o Turnstile ao ver
   a divergência. Para UA recente, suba a versão do Playwright.
-- **Prompt grande vai por `fill()`, nunca colado.** O handler de colar da UI
-  transforma texto longo em **anexo**, e aí a resposta ignora metade do pedido.
+- **Prompt vai escrito direto no DOM do editor, nunca colado — e `fill()` só
+  de reserva.** O handler de colar da UI transforma texto longo em **anexo**
+  ("Texto colado"), e aí a resposta ignora metade do pedido. E o `fill()` custa
+  por **quebra de linha**, cada uma mais cara que a anterior: em 25/09/2026, 60
+  mil caracteres em 539 linhas levavam 38 s, e 20 mil em 1.667 linhas curtas
+  (texto de PDF) não terminavam em 10 min — 50% de 502 por dias, "caixa de
+  texto indisponível" nas três contas. `escrever_prompt` monta um `<p>` por
+  linha e confere que o ProseMirror adotou (`pmViewDesc` + texto relido):
+  5 mil linhas em ~1 s.
+- **O chatgpt.com guarda RASCUNHO do composer.** Depois de `goto`/`reload` a
+  caixa pode voltar com o texto da tentativa anterior; toda escrita tem que
+  SUBSTITUIR o conteúdo, nunca acrescentar.
+- **O `422` a cada 10 min no log é a sonda do Radar** (POST sem corpo, que o
+  monitor dele aceita como "no ar"). Não é falha — ao medir a taxa de sucesso,
+  conte só `200` × `502`/`503`/`504`.
 - **Container morto à força deixa `SingletonLock` no perfil** e o Chromium se
   recusa a abrir. O `_launch` limpa isso sozinho no boot.
 - **A porta do noVNC não é publicada.** O `INPUT` desta VPS está `ACCEPT`, e o
