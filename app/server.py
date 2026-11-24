@@ -536,6 +536,63 @@ async def admin_screenshot(acct_id: str, authorization: str | None = Header(None
     return Response(content=png, media_type="image/png")
 
 
+_DOM_JS = r"""(sel) => {
+    const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    const caixas = [...document.querySelectorAll('[contenteditable], textarea, input[type=text]')]
+        .map(e => ({tag: e.tagName, id: e.id, name: e.getAttribute('name'),
+                    role: e.getAttribute('role'), testid: e.dataset.testid,
+                    ce: e.getAttribute('contenteditable'),
+                    cls: String(e.className || '').slice(0, 100),
+                    rotulo: e.getAttribute('placeholder') || e.getAttribute('aria-label')
+                            || e.getAttribute('data-placeholder'),
+                    visivel: vis(e), html: e.outerHTML.slice(0, 300)}));
+    const form = document.querySelector('form');
+    // Estrutura das mensagens: quais data-* existem dentro do <main> (com
+    // contagem) e o caminho de ancestrais da ultima resposta visivel -- para
+    // achar o seletor novo quando o de mensagens tambem para de casar.
+    const main = document.querySelector('main') || document.body;
+    const attrs = {};
+    for (const el of main.querySelectorAll('*'))
+        for (const a of el.attributes)
+            if (a.name.startsWith('data-')) {
+                const k = a.name + (/(role|turn|testid)/.test(a.name) ? '=' + a.value.slice(0, 40) : '');
+                attrs[k] = (attrs[k] || 0) + 1;
+            }
+    const md = [...main.querySelectorAll('.markdown')].pop();
+    const cadeia = [];
+    for (let e = md; e && e !== main; e = e.parentElement)
+        cadeia.push(e.tagName + [...e.attributes].filter(a => a.name !== 'class' && a.name !== 'style')
+            .map(a => `[${a.name}="${a.value.slice(0, 50)}"]`).join(''));
+    const comp = document.querySelector('[data-chatgpt-composer]') || form || document.body;
+    const botoes = [...comp.querySelectorAll('button')].filter(vis).map(b =>
+        ({testid: b.dataset.testid, aria: b.getAttribute('aria-label'), id: b.id,
+          texto: (b.innerText || '').trim().slice(0, 30)}));
+    const amostra = sel ? [...document.querySelectorAll(sel)].slice(-3)
+        .map(e => e.outerHTML.slice(0, 4000)) : [];
+    return {url: location.href, titulo: document.title, caixas,
+            form: form ? form.outerHTML.slice(0, 2500) : null,
+            data_attrs: attrs, cadeia_ultima_resposta: cadeia, botoes, amostra};
+}"""
+
+
+@app.get("/admin/dom/{acct_id}")
+async def admin_dom(acct_id: str, sel: str = "", authorization: str | None = Header(None)):
+    """O que a aba tem de caixa de texto -- para quando o ChatGPT troca o
+    composer e o seletor do driver para de casar (2026-11-24)."""
+    _require_key(authorization)
+    acct = pool.get(acct_id)
+    if not acct:
+        raise HTTPException(404, f"conta desconhecida: {acct_id}")
+    info = await asyncio.wait_for(acct.page.evaluate(_DOM_JS, sel), 15)
+    info["frames"] = [f.url[:120] for f in acct.page.frames]
+    try:
+        info["seletor_do_driver"] = await asyncio.wait_for(
+            driver.editor_de(acct.page).count(), 10)
+    except Exception as e:
+        info["seletor_do_driver"] = f"erro: {str(e)[:120]}"
+    return info
+
+
 @app.get("/admin/stack/{acct_id}")
 async def admin_stack(acct_id: str, authorization: str | None = Header(None)):
     """Pilha da tarefa que segura a conta. E o que diz QUAL chamada do

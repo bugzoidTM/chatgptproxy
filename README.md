@@ -76,6 +76,8 @@ detecta e-mail repetido.
 ./admin.sh contas          # situação das três
 ./admin.sh teste           # pergunta de verdade, ponta a ponta
 ./admin.sh foto conta2     # print da aba
+./admin.sh dom conta2      # caixas de texto, data-* e botoes da aba (UI trocada?)
+./admin.sh dom conta2 '[data-dil-response]'  # HTML de quem casa com o seletor
 ./admin.sh recupera conta2 # recria a aba da conta (sem relogin)
 ./admin.sh pilha conta1    # onde a tarefa que segura a conta está parada
 docker service logs -f chatgptproxy_chatgptproxy

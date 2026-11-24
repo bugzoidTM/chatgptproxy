@@ -11,10 +11,36 @@ import time
 
 from . import config
 
-EDITOR = "#prompt-textarea"
-ASSISTANT = '[data-message-author-role="assistant"]'
-USUARIO = '[data-message-author-role="user"]'
-STOP_BUTTON = '[data-testid="stop-button"]'
+# 2026-11-24: o ChatGPT trocou o composer e `#prompt-textarea` sozinho parou
+# de casar (logado, sem Cloudflare, caixa na tela -- e o driver preso no passo
+# `editor` ate estourar, o que ainda aparecia no log como "Cloudflare barrou").
+# Lista so com seletores DO COMPOSER, filtrando o que esta VISIVEL (o composer
+# antigo tinha um <textarea> escondido de reserva com o mesmo nome).
+# NUNCA por seletor generico (`[contenteditable][role=textbox]`, `form ...`): o
+# bloco de codigo das respostas agora e um editor contenteditable com
+# role=textbox, e a lista com virgula casa em ORDEM DO DOM, nao na ordem
+# escrita -- o driver escreveu o prompt dentro do codigo da resposta anterior.
+EDITOR = ('#prompt-textarea, '
+          '[data-chatgpt-composer] div.ProseMirror[contenteditable="true"], '
+          'div.ProseMirror[contenteditable="true"][data-composer-markdown] '
+          '>> visible=true')
+
+
+def editor_de(page):
+    return page.locator(EDITOR).first
+
+
+# UI de 2026-11-24: `data-message-author-role` sumiu. O `data-conversation-role`
+# novo esta num <h4> sr-only ("Voce disse:"), NAO no conteiner da mensagem --
+# nao serve. Pergunta = balao do usuario; resposta = `[data-dil-response]`, com
+# o id da mensagem em `data-dil-message-id` (o que `data-message-id` era).
+# NAO `[data-response-body]`: ele so envolve a resposta quando ela TERMINA, e
+# ancorar nele matava o streaming (tudo chegava num delta so, no fim).
+ASSISTANT = '[data-message-author-role="assistant"], [data-dil-response]'
+USUARIO = '[data-message-author-role="user"], [data-user-message-bubble]'
+# O botao de parar perdeu o data-testid; so sobrou o aria-label (localizado).
+STOP_BUTTON = ('[data-testid="stop-button"], button[aria-label="Parar"], '
+               'button[aria-label="Stop"], button[aria-label="Stop streaming"]')
 RATE_MODAL = '[data-testid="modal-conversation-history-rate-limit"]'
 CLICK_TIMEOUT_MS = 10000
 # `fill` sem timeout explicito usa os 30s padrao do Playwright. Em 2026-09-10
@@ -65,10 +91,24 @@ LOGIN_MARKERS = ('[data-testid="login-button"], [data-testid="mobile-login-butto
 # <pre> com rótulo de linguagem). Sem remontar o markdown, o harness não
 # consegue distinguir código de prosa.
 EXTRACT_MARKDOWN = """el => {
-    const md = el.querySelector('.markdown') || el;
+    const md = el.querySelector('.markdown, [data-dil-response]') || el;
     const parts = [];
     for (const node of md.children) {
-        if (node.tagName === 'PRE') {
+        // UI de 2026-11-24: bloco de codigo virou widget com um editor
+        // (contenteditable, uma <div> por linha) e a linguagem no atributo
+        // `data-language`; a barra de acoes tem o rotulo e botoes -- fora.
+        const cod = node.matches('[data-client-defined-widget="code_block"]')
+            ? node : node.querySelector('[data-code-block]');
+        const ed = cod && cod.querySelector('[data-language]');
+        if (ed) {
+            const lang = (ed.getAttribute('data-language') || '').toLowerCase();
+            // textContent por linha: innerText depende do CSS para nao
+            // colapsar a indentacao (Python sem indentacao e outro programa).
+            const linhas = [...ed.children];
+            const body = (linhas.length ? linhas.map(l => l.textContent).join('\\n')
+                                        : ed.textContent).replace(/\\n$/, '');
+            parts.push('```' + lang + '\\n' + body + '\\n```');
+        } else if (node.tagName === 'PRE') {
             const code = node.querySelector('code');
             let lang = '';
             if (code) {
@@ -203,6 +243,22 @@ async def dismiss_modals(page) -> None:
             raise RateLimited("ChatGPT está limitando as solicitações nesta conta")
 
 
+async def desafio_na_tela(page) -> bool:
+    """A pagina e MESMO o desafio do Cloudflare?
+
+    O iframe de challenges.cloudflare.com aparece tambem na pagina normal (em
+    segundo plano), entao "existe o frame" nao prova nada. Em 2026-11-24 o
+    seletor da caixa quebrou e o log passou dias dizendo "Cloudflare barrou"
+    com o ChatGPT logado e a caixa na tela -- e o dono foi caçar o Cloudflare.
+    A pagina do desafio tem titulo proprio ("Um momento…" / "Just a moment").
+    """
+    try:
+        titulo = (await page.title()).lower()
+    except Exception:
+        return False
+    return any(t in titulo for t in ("um momento", "just a moment", "attention required"))
+
+
 async def try_solve_turnstile(page) -> bool:
     """Clica o checkbox do Turnstile (iframe cross-origin). Só costuma passar
     quando a sessão já é confiável."""
@@ -223,7 +279,7 @@ async def try_solve_turnstile(page) -> bool:
             if clicked:
                 break
         await page.wait_for_timeout(6000)
-        if await page.locator(EDITOR).count():
+        if await editor_de(page).count():
             return True
         if not any("challenges.cloudflare.com" in (f.url or "") for f in page.frames):
             return True
@@ -292,7 +348,7 @@ async def diagnosticar_editor(page) -> dict:
     except Exception:
         pass
     try:
-        out["desabilitado"] = await page.locator(EDITOR).first.evaluate(
+        out["desabilitado"] = await editor_de(page).evaluate(
             "el => el.getAttribute('contenteditable') === 'false'"
             " || el.disabled === true"
             " || el.getAttribute('aria-disabled') === 'true'"
@@ -335,7 +391,7 @@ async def recuperar_editor(page, diag: dict) -> None:
 
 async def wait_editor(page) -> None:
     """Garante a caixa de texta pronta, resolvendo desafio/sessão pelo caminho."""
-    editor = page.locator(EDITOR)
+    editor = editor_de(page)
     try:
         await editor.wait_for(state="visible", timeout=config.EDITOR_TIMEOUT * 1000)
         # O editor ficar VISIVEL nao prova que da para escrever nele: com o
@@ -354,6 +410,9 @@ async def wait_editor(page) -> None:
     if await sessao_caiu(page):
         raise SessionExpired("sessão caiu: a página está oferecendo login")
 
+    if not await desafio_na_tela(page):
+        raise Blocked("a caixa de texto do ChatGPT não apareceu, e não há desafio do "
+                      "Cloudflare na tela (o seletor EDITOR pode ter mudado: ./admin.sh dom)")
     if not await try_solve_turnstile(page):
         raise Blocked("Cloudflare barrou e o desafio não passou sozinho")
     try:
@@ -403,7 +462,8 @@ async def _ultima_resposta(page):
         return None, None
     ultima = answers.nth(n - 1)
     try:
-        return ultima, await ultima.get_attribute("data-message-id")
+        return ultima, (await ultima.get_attribute("data-message-id")
+                        or await ultima.get_attribute("data-dil-message-id"))
     except Exception:
         return ultima, None
 
@@ -471,7 +531,7 @@ async def ask_stream(page, prompt: str, timeout: int | None = None, buf: "Respos
     perguntas = page.locator(USUARIO)
     perguntas_antes = await perguntas.count()
 
-    editor = page.locator(EDITOR)
+    editor = editor_de(page)
 
     recuperou = {"ja": False}
 
